@@ -651,10 +651,15 @@ func (m *Manager) createNewConfig(nodes []config.NodeConfig) *config.Config {
 func createConfig(base *config.Config, nodes []config.NodeConfig) *config.Config {
 	newCfg := cloneConfig(base)
 	newCfg.Nodes = nil
+	// Only the subscription slice is replaced here. Inline, nodes_file and
+	// extension-sourced nodes belong to other owners and must survive a
+	// subscription refresh; dropping them silently removed mapping/freepool
+	// nodes until the next extension publication.
 	for _, node := range base.Nodes {
-		if node.Source == config.NodeSourceInline {
-			newCfg.Nodes = append(newCfg.Nodes, node)
+		if node.Source == config.NodeSourceSubscription {
+			continue
 		}
+		newCfg.Nodes = append(newCfg.Nodes, node)
 	}
 	for _, node := range nodes {
 		node.Source = config.NodeSourceSubscription

@@ -74,6 +74,17 @@ pool:
   # 真实传输故障立刻按 blacklist_duration 拉黑，不必等 failure_threshold 累计；
   # 429/超时类仍只按对应冷却处理。设为 false 则回到阈值累计逻辑（仍会自动换节点重试）
   blacklist_failed_pin: true
+  # 用户分池：按基础用户名把请求限制到显式的节点子集（仅 pool / hybrid 主入口生效）。
+  # 未匹配任何池的用户使用默认池 = 全部节点；池内节点不可用时不回落到池外。
+  # nodes 写节点 tag（WebUI 勾选生成）；留空表示该池使用全部节点。
+  # 匹配规则为「基础用户名」精确匹配，不含 ".会话ID" 后缀。
+  # user_pools:
+  #   - name: team-a
+  #     users: ["alice", "bob"]
+  #     nodes: ["hk-01", "jp-02", "us-03"]      # 精确 3 个节点
+  #   - name: team-b
+  #     users: ["carol"]
+  #     nodes: ["sg-01", "tw-02", "kr-03", "de-04", "uk-05"]   # 精确 5 个节点
 
 # ───────────────────────────────────────────────────────────────
 # 会话路由与旧版粘性代理（仅 pool / hybrid 模式生效）
@@ -201,3 +212,152 @@ nodes:
 # - TUIC:    tuic://uuid:password@server:443?params#name
 # 注意：解析器可识别部分额外协议前缀（如 ssr://、hysteria://），
 # 但当前内核实际构建仅支持以上 9 类，其他会被跳过并输出日志。
+#
+# 订阅来源除 http(s) URL 外，还支持本地文件（相对/绝对路径或 file:// 前缀）
+# 与内联内容（inline:<base64>），便于直接添加 Clash YAML / Base64 订阅。
+
+# ═══════════════════════════════════════════════════════════════
+# 二开扩展：来源与验证
+# ═══════════════════════════════════════════════════════════════
+# 扩展能力已融入原主面板（监控看板 / 会话路由 / 诊断分析 / 系统设置 / 控制台日志），
+# 无需单独页面；JSON API 前缀 /api/ext/，沿用主面板登录鉴权。
+# extension:
+#   enabled: false
+#   outbound_proxy: "http://127.0.0.1:7897"   # 来源出站默认代理
+#   cache_file: extension_nodes.txt
+#
+#   # 网络空间测绘：内置 fofa / hunter / quake 预设（默认关闭），
+#   # 同时完整保留任意自定义 provider。凭据仅填环境变量名，明文由 .env 注入。
+#   # 预设参数参考 thinkoaa/Deadpool v1.8 的 API 事实独立重写（未复制其 GPLv3 源码）。
+#   mapping:
+#     enabled: false
+#     interval: 6h
+#     timeout: 20s
+#     concurrency: 4
+#     max_results: 200
+#     rate_limit_per_min: 30
+#     presets:
+#       - platform: fofa
+#         enabled: false
+#         key_env: FOFA_KEY               # FOFA 现行为 key-only
+#         # email_env: FOFA_EMAIL         # 仅旧账号需要，可选
+#         query: 'protocol=="socks5" && country="CN" && banner="Method:No Authentication"'
+#         size: 300
+#         encoding: url                  # url=URLEncoding；若平台要求标准 base64 改为 std
+#       - platform: hunter
+#         enabled: false
+#         key_env: HUNTER_API_KEY
+#         query: 'protocol=="socks5"&&protocol.banner="No authentication"&&ip.country="CN"'
+#         size: 200                       # 需为 100 的倍数，按 100 条/页翻页
+#         encoding: url
+#       - platform: quake
+#         enabled: false
+#         key_env: QUAKE_TOKEN
+#         query: 'service:socks5  AND country: "CN" AND response:"No authentication"'
+#         size: 500
+#         encoding: url
+#     providers:                           # 自定义来源：以下字段全部可自行填写
+#       - name: my-provider
+#         enabled: false
+#         endpoint: ""                     # 自填 API 地址
+#         method: GET                     # GET / POST / PUT
+#         auth:
+#           type: query                   # query / header / bearer / basic / none
+#           key_name: key
+#           key_env: MAPPING_API_KEY     # 凭据走环境变量，日志不打印
+#         query_param: q                  # 搜索词参数名
+#         query: ""                       # 自填搜索词/语法
+#         query_encoding: ""              # "" 原文 / std 标准 base64 / url URL-safe base64
+#         body_template: ""               # POST JSON 体模板，占位符 {query} {size} {start} {page} {key}
+#         request_interval: ""            # 页间等待，如 Hunter 需 3s
+#         extra_params: {}
+#         pagination:
+#           enabled: false
+#           param: page
+#           start: 1
+#           max_pages: 1
+#           size_param: size
+#           size: 100
+#         response:
+#           format: json                  # json / text
+#           results_path: "results"      # 点分路径，数字段表示数组下标
+#           text_pattern: ""              # text 模式可用 (?P<host>...)(?P<port>...)
+#           fields:
+#             host: "1"                   # 字段路径或数组下标
+#             port: "2"
+#             protocol: ""
+#             username: ""
+#             password: ""
+#             name: ""
+#             default_protocol: http
+#
+#   # proxy_pool 方式获取免费代理：抓取 → 统一验证 → 入池。
+#   # 内置源默认全部关闭，需用户显式启用；不依赖 Redis / 外部内核。
+#   freepool:
+#     enabled: false
+#     interval: 5m
+#     timeout: 10s
+#     concurrency: 4
+#     max_results: 200
+#     rate_limit_per_min: 60
+#     fetchers:
+#       - name: my-free-list
+#         enabled: false
+#         url: ""
+#         format: text                   # text / json
+#         json_path: ""
+#         protocol: http
+#     external_api:                      # 可选：对接已部署的 proxy_pool
+#       enabled: false
+#       base_url: "http://127.0.0.1:5010"
+#       get_path: "/get/"
+#       count_path: "/count/"
+#       batch: 20
+#
+#   # 全维度验证（公共 echo 服务）：连通 / 握手 / 出口 IP / 匿名度 /
+#   # DNS 泄漏风险 / 延迟 / 速率 / 地域实测 / 多次复检 / 评分准入，
+#   # 以及「代理真实性」与「恶意 MITM」两项硬门禁判定。
+#   verification:
+#     enabled: true
+#     echo_ip_url: "https://httpbin.org/ip"
+#     echo_headers_url: "https://httpbin.org/headers"
+#     echo_download_url: "https://httpbin.org/bytes/65536"
+#     region_url: "http://ip-api.com/json/{ip}?fields=country,countryCode,query"
+#     region_disabled: false           # 设为 true 可关闭地域实测
+#     timeout: 8s
+#     concurrency: 32
+#     retries: 3
+#     retry_interval: 200ms
+#     rate_limit_per_min: 600
+#     min_score: 40
+#     recheck_interval: 10m
+#     max_failures: 3
+#     no_proxy: ""                       # 特殊目标（逗号分隔）全程不走代理
+#
+#     # 代理真实性：确认为真实转发代理，排除蜜罐 / 拦截页 / 普通 HTTP 服务。
+#     authenticity:
+#       enabled: true                    # 省略时默认启用
+#       require_exit_differs: true       # 出口 IP 必须不同于直连 IP
+#       require_declared_match: true     # 出口 IP 必须等于测绘宣称 IP
+#       check_url: "https://www.baidu.com/robots.txt"
+#       expect_keyword: "Baiduspider"    # 响应体期望片段（拦截页检测）
+#       expect_sha256: ""                # 填写后优先于关键字，做精确内容指纹
+#       check_status: true
+#       follow_redirect: false           # 不跟随重定向，避免被劫持页面蒙混
+#       action: reject                   # reject / mark / downgrade
+#
+#     # 恶意 MITM 五层判定：L1 严格证书校验、L2 证书/公钥基线、
+#     # L3 响应体哈希、L4 注入头/降级、L5 可信与黑名单。
+#     # 注意：参考项目 Deadpool 使用 InsecureSkipVerify，无任何 MITM 检测，
+#     # 本节为本工程独立实现，不受全局 skip_cert_verify 影响。
+#     mitm:
+#       enabled: true                    # 省略时默认启用
+#       probe_url: "https://www.baidu.com/robots.txt"   # 可信 HTTPS 基线目标（必须 https）
+#       verify_certificate: true
+#       compare_cert_baseline: true
+#       compare_body_hash: true
+#       check_headers: true
+#       trusted_fingerprints: []         # 非空时启用证书指纹白名单
+#       blacklist_ips: []
+#       blacklist_fingerprints: []
+#       action: reject                   # reject / mark / downgrade

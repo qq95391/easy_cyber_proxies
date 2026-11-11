@@ -495,6 +495,29 @@
       .progress-float { top: 6px; right: 10px; max-width: calc(100vw - 20px); gap: 10px; padding: 7px 10px; }
       #manageTab > div:first-child { flex-wrap: wrap; gap: 12px; }
     }
+    /* Extension features reuse the existing console theme. */
+    .ext-chips { display:flex; flex-wrap:wrap; gap:4px; margin-top:4px; }
+    .ext-chip { display:inline-flex; align-items:center; gap:3px; font-size:10px; line-height:1.5; padding:1px 6px; border-radius:10px; border:1px solid var(--border); color:var(--text-muted); background:var(--bg-input); white-space:nowrap; }
+    .ext-chip.ok { border-color:var(--success); color:var(--success); background:var(--success-bg); }
+    .ext-chip.warn { border-color:var(--warning); color:var(--warning); background:var(--warning-bg); }
+    .ext-chip.err { border-color:var(--error); color:var(--error); background:var(--error-bg); }
+    .ext-chip.info { border-color:var(--primary); color:var(--primary); }
+    .ext-row { cursor:pointer; }
+    .ext-row:hover { background:var(--bg-hover); }
+    .ext-detail-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:10px; }
+    .ext-kv { padding:9px 11px; border:1px solid var(--border); border-radius:8px; background:var(--bg-input); }
+    .ext-kv .k { font-size:11px; color:var(--text-muted); }
+    .ext-kv .v { font-size:13px; color:var(--text-main); word-break:break-all; margin-top:3px; }
+    .ext-source-item { border:1px solid var(--border); border-radius:10px; background:var(--bg-input); padding:12px; margin-bottom:10px; }
+    .ext-source-head { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px; margin-bottom:10px; }
+    .ext-source-title { font-size:13px; font-weight:600; color:var(--text-main); }
+    .ext-actions { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+    .ext-stat-strip { display:flex; flex-wrap:wrap; gap:8px; }
+    .ext-stat { flex:1 1 120px; min-width:0; padding:10px 12px; border:1px solid var(--border); border-radius:8px; background:var(--bg-input); }
+    .ext-stat .k { font-size:11px; color:var(--text-muted); }
+    .ext-stat .v { font-size:18px; font-weight:600; color:var(--text-main); margin-top:2px; }
+    .ext-advanced { width:100%; font-family:var(--font-mono); font-size:11px; }
+    @media (max-width: 700px) { .ext-detail-grid { grid-template-columns:minmax(0,1fr); } }
     @media (prefers-reduced-motion: reduce) { *,*::before,*::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }
   </style>
   <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
@@ -683,7 +706,9 @@
         <div class="filter-toolbar">
           <label class="search-field"><span class="sr-only">搜索节点名称、标签或地域</span><svg fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><use href="#i-search"/></svg><input type="search" id="nodeSearch" class="setting-input" placeholder="搜索节点名称、标签或地域" oninput="applyNodeFilters(true)" /></label>
           <label><span class="sr-only">按节点状态筛选</span><select id="nodeStatusFilter" class="setting-input" onchange="applyNodeFilters(true)"><option value="all">所有状态</option><option value="healthy">健康在线</option><option value="pending">等待检查</option><option value="unavailable">不可用</option><option value="blacklisted">已拉黑</option></select></label>
-          <label><span class="sr-only">节点排序</span><select id="nodeSort" class="setting-input" onchange="applyNodeFilters(true)"><option value="default">默认顺序</option><option value="latency">延迟优先</option><option value="connections">连接数优先</option><option value="failures">失败次数优先</option><option value="name">名称排序</option></select></label>
+          <label><span class="sr-only">节点排序</span><select id="nodeSort" class="setting-input" onchange="applyNodeFilters(true)"><option value="default">默认顺序</option><option value="latency">延迟优先</option><option value="connections">连接数优先</option><option value="failures">失败次数优先</option><option value="name">名称排序</option><option value="score">验证评分优先</option></select></label>
+          <label><span class="sr-only">按节点来源筛选</span><select id="nodeSourceFilter" class="setting-input" onchange="applyNodeFilters(true)"><option value="all">所有来源</option><option value="subscription">订阅</option><option value="mapping">网络测绘</option><option value="freepool">免费代理池</option><option value="external_pool">外部代理池</option><option value="inline">内置 / 文件</option></select></label>
+          <label><span class="sr-only">按验证等级筛选</span><select id="nodeGradeFilter" class="setting-input" onchange="applyNodeFilters(true)"><option value="all">所有验证等级</option><option value="A">A · 高匿可用</option><option value="B">B · 良好</option><option value="C">C · 一般</option><option value="D">D · 不建议</option><option value="none">未验证</option></select></label>
           <span class="filter-count" id="nodeFilterCount"></span>
         </div>
         <div class="panel">
@@ -712,6 +737,32 @@
             <div id="nodesPagingHint" style="display:none; text-align:center; padding: 12px; color: var(--text-muted); font-size: 12px;"></div>
           </div>
         </div>
+
+        <!-- 节点来源健康：与节点监控列表同页，因为来源直接产生这些节点 -->
+        <div class="panel" style="margin-top: 16px;" data-ext-config="health">
+          <div class="panel-header">
+            <div class="panel-title">节点来源健康</div>
+            <div class="ext-actions">
+              <button type="button" class="btn btn-sm" id="extSourceToggle" onclick="toggleExtSourceHealth()">展开</button>
+              <button type="button" class="btn btn-sm" onclick="extRefresh()">立即抓取并验证</button>
+              <button type="button" class="btn btn-sm" onclick="extRecheck()">仅复检</button>
+            </div>
+          </div>
+          <div id="extSourceHealth" hidden style="padding: 16px;">
+            <div class="ext-stat-strip" id="extSourceStats"></div>
+            <div class="table-container" style="margin-top: 12px;">
+              <table>
+                <thead><tr><th scope="col">来源</th><th scope="col">类型</th><th scope="col">状态</th><th scope="col">节点</th><th scope="col">目标 / 搜索词</th><th scope="col">最近抓取</th></tr></thead>
+                <tbody id="extSourceBody"></tbody>
+              </table>
+            </div>
+            <div class="filter-toolbar" style="margin-top: 12px;">
+              <label class="search-field"><span class="sr-only">手动验证代理地址</span><input type="search" id="extVerifyProxy" class="setting-input" placeholder="手动验证代理 URL，例如 http://1.2.3.4:8080" /></label>
+              <button type="button" class="btn btn-sm" onclick="extVerifyOne()">验证</button>
+            </div>
+            <div id="extVerifyResult" class="notice" hidden style="margin-top:10px;"></div>
+          </div>
+        </div>
       </div>
 
       <!-- Session Routing Tab -->
@@ -734,6 +785,32 @@
           </div>
           <div class="panel"><div class="panel-header"><div class="panel-title">绑定策略</div><span class="badge badge-offline" id="sessionEnabledBadge">读取中</span></div><dl class="session-stats"><div><dt>当前绑定</dt><dd id="proxySessionTotal">—</dd></div><div><dt>容量上限</dt><dd id="proxySessionCapacity">—</dd></div><div><dt>空闲有效期</dt><dd id="proxySessionTTL" style="font-size:16px">—</dd></div><div><dt>接入方式</dt><dd style="font-size:15px">HTTP / SOCKS5</dd></div></dl><div class="notice" style="margin:0 20px 20px"><svg class="inline-icon" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><use href="#i-info"/></svg><div><strong>首次连接建立绑定</strong><br/>生成链接不会预选节点。会话空闲到期、手动重置或节点失效后，下次连接重新选路。重置不主动关闭现有连接。</div></div></div>
         </div>
+        <!-- 扩展来源落地端口：与「接入链接生成器」同页，都是代理接入方式 -->
+        <div class="panel" style="margin-top: 16px;">
+          <div class="panel-header"><div class="panel-title">扩展节点独立端口接入</div><span class="badge badge-offline">按节点直连</span></div>
+          <div style="padding: 16px;">
+            <p class="form-help" style="margin-top:0;">扩展来源落地后的节点使用独立 mixed 端口，同一端口同时支持 HTTP 与 SOCKS5。复制内容包含真实凭据，请妥善保管。</p>
+            <div class="table-container">
+              <table><thead><tr><th scope="col">节点</th><th scope="col">端口</th><th scope="col">来源</th><th scope="col">验证</th><th scope="col">接入 URL（密码已遮蔽）</th><th scope="col">操作</th></tr></thead><tbody id="extAccessBody"></tbody></table>
+            </div>
+            <div id="extAccessEmpty" class="empty-message" hidden>暂无扩展节点端口。请确认运行模式为 multi-port / hybrid，并完成来源抓取与验证。</div>
+          </div>
+        </div>
+        <!-- 用户分池：按基础用户名划分节点子集，未匹配用户走默认池（全部） -->
+        <div class="panel" style="margin-top: 16px;">
+          <div class="panel-header">
+            <div><div class="panel-title">用户分池</div><p class="form-help" style="margin-top:5px">按基础用户名划分节点子集；未匹配的用户使用默认池（全部节点）。池内节点不可用时不回落到池外。</p></div>
+            <button type="button" class="btn btn-sm btn-primary" onclick="openUserPoolEditor()">新增池</button>
+          </div>
+          <div class="table-container">
+            <table>
+              <thead><tr><th scope="col">池名</th><th scope="col">绑定用户名</th><th scope="col">节点数</th><th scope="col">操作</th></tr></thead>
+              <tbody id="userPoolsBody"></tbody>
+            </table>
+          </div>
+          <div id="userPoolsEmpty" class="empty-message" hidden>暂无分池规则，所有用户使用默认池（全部节点）。</div>
+        </div>
+
         <div class="panel"><div class="panel-header"><div><div class="panel-title">会话绑定</div><p class="form-help" style="margin-top:5px">绑定按节点身份跨订阅刷新 / 核心重载保留；进程重启清空。</p></div><button type="button" class="btn btn-danger" id="clearSessionsBtn" onclick="resetProxySessions()" disabled>重置全部绑定</button></div>
           <div class="filter-toolbar" style="padding:16px 20px 0"><label class="search-field"><span class="sr-only">搜索会话 ID 或上游节点</span><svg fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><use href="#i-search"/></svg><input type="search" id="proxySessionSearch" class="setting-input" placeholder="搜索会话 ID、用户名或节点" oninput="renderProxySessions()" /></label><span class="filter-count" id="sessionFilterCount"></span></div>
           <div class="table-container"><table class="session-table"><caption class="sr-only">命名代理会话的节点绑定与有效期</caption><thead><tr><th scope="col">会话 / 用户名</th><th scope="col">绑定节点</th><th scope="col">首次绑定</th><th scope="col">最近使用 / 到期</th><th scope="col">切换</th><th scope="col">操作</th></tr></thead><tbody id="proxySessionsBody"></tbody></table></div><div class="empty-message" id="proxySessionsEmpty">正在加载绑定…</div><div id="sessionPagingHint" class="empty-message" hidden></div>
@@ -797,6 +874,12 @@
           </div>
         </div>
 
+        <!-- 验证质量分布：与「节点质量分析」同页，都是节点质量维度 -->
+        <div class="panel" style="margin-bottom: 16px;">
+          <div class="panel-header"><div class="panel-title">代理验证质量分布</div><span class="form-help">出口 IP / 匿名度 / 评分</span></div>
+          <div style="padding: 16px;"><div class="ext-stat-strip" id="extQualityStats"></div></div>
+        </div>
+
         <div class="filter-toolbar"><label class="search-field"><span class="sr-only">搜索诊断节点</span><input type="search" id="debugNodeSearch" class="setting-input" placeholder="搜索节点名称或标签" oninput="renderDebugNodes(true)" /></label><span class="filter-count" id="debugFilterCount"></span></div>
         <div class="panel">
           <div class="panel-header"><div class="panel-title">节点质量分析</div></div>
@@ -822,7 +905,7 @@
       <div id="logsTab" class="tab-content">
         <div class="panel">
           <div class="panel-header">
-            <div class="panel-title">控制台日志 (Console Logs) <span id="logStatus" role="status" class="form-help"></span></div>
+            <div class="panel-title">控制台日志 (Console Logs) <span id="logStatus" role="status" class="form-help"></span> <span class="form-help">· 来源抓取与验证日志同样汇入此处</span></div>
             <div style="display:flex; align-items:center; gap:12px;">
               <label style="font-size:13px; color:var(--text-muted); display:flex; align-items:center; gap:6px;"><input type="checkbox" id="autoScrollLogs" checked> 自动滚动</label>
               <button class="btn btn-sm" onclick="pollLogs()"><svg fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><use href="#i-refresh"/></svg> 刷新</button>
@@ -1005,6 +1088,40 @@
               <button type="submit" class="btn btn-primary" id="settingsSaveBtn" disabled style="padding: 10px 32px; font-size: 14px;">保存配置</button>
             </div>
           </form>
+
+          <!-- 节点来源配置：与「订阅配置」同页，四类都是节点来源；独立于主表单，避免误触发主配置保存 -->
+          <div class="panel" style="margin-bottom: 16px;">
+            <div class="panel-header"><div class="panel-title">节点来源 · 扩展配置</div><span class="form-help">订阅 / 网络测绘 / 免费代理池</span></div>
+            <div style="padding: 16px;">
+              <div id="extConfigRoot"></div>
+              <div class="ext-source-head" style="margin-top:16px;"><span class="ext-source-title">内置测绘平台预设</span><span class="form-help">凭据仅填环境变量名，明文密钥由 .env 注入</span></div>
+              <div id="extPresetSources"></div>
+              <div class="ext-source-head" style="margin-top:16px;"><span class="ext-source-title">自定义网络测绘来源</span><button type="button" class="btn btn-sm" onclick="extAddSource('mapping')">添加来源</button></div>
+              <div id="extMappingSources"></div>
+              <div class="ext-source-head" style="margin-top:16px;"><span class="ext-source-title">免费代理源</span><button type="button" class="btn btn-sm" onclick="extAddSource('freepool')">添加来源</button></div>
+              <div id="extFreeSources"></div>
+              <div class="ext-source-head" style="margin-top:16px;"><span class="ext-source-title">外部 proxy_pool API</span></div>
+              <div id="extExternalSource"></div>
+            </div>
+          </div>
+
+          <!-- 验证策略：与其他全局运行参数同页 -->
+          <div class="panel" style="margin-bottom: 16px;">
+            <div class="panel-header"><div class="panel-title">验证策略</div><span class="form-help">评分低于准入线的节点不入池；真实性 / MITM 判定为硬门禁</span></div>
+            <div style="padding: 16px;">
+              <div id="extVerificationFields"></div>
+              <div class="ext-source-head" style="margin-top:16px;"><span class="ext-source-title">代理真实性判定</span><span class="form-help">排除蜜罐 / 拦截页 / 非转发服务</span></div>
+              <div id="extAuthenticityFields"></div>
+              <div class="ext-source-head" style="margin-top:16px;"><span class="ext-source-title">恶意 MITM 判定</span><span class="form-help">证书链 / 证书基线 / 响应完整性 / 注入头 / 名单</span></div>
+              <div id="extMITMFields"></div>
+            </div>
+          </div>
+
+          <div style="display: flex; justify-content: flex-end; gap: 12px; padding: 0 0 8px;">
+            <button type="button" class="btn" onclick="loadExtConfig()">重新读取</button>
+            <button type="button" class="btn btn-primary" id="extSaveBtn" onclick="saveExtConfig()">保存扩展配置</button>
+          </div>
+          <div style="font-size: 11px; color: var(--success); margin: 0 0 24px;">扩展配置保存后立即生效（来源重建并重新抓取）；凭据仅通过环境变量名引用，页面不保存明文密钥。</div>
         </div>
       </div>
 
@@ -1061,6 +1178,45 @@
   </div>
 
 
+
+  <!-- Node detail: reuses the upstream modal theme, no drawer CSS needed -->
+  <div class="modal-overlay" id="extNodeModalOverlay">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="extNodeModalTitle" style="max-width: 760px;">
+      <div class="modal-header" id="extNodeModalTitle">节点详情与验证结果</div>
+      <div class="modal-body">
+        <div class="ext-detail-grid" id="extNodeDetailGrid"></div>
+        <div class="form-help" style="margin-top: 12px;" id="extNodeDetailHint"></div>
+      </div>
+      <div class="modal-footer"><button type="button" class="btn" onclick="closeModal('extNodeModalOverlay')">关闭</button></div>
+    </div>
+  </div>
+
+  <!-- 用户分池编辑器 -->
+  <div class="modal-overlay" id="userPoolModalOverlay">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="userPoolModalTitle" style="max-width: 760px;">
+      <div class="modal-header" id="userPoolModalTitle">用户分池</div>
+      <div class="modal-body">
+        <div class="form-grid">
+          <div class="form-group"><label for="userPoolName">池名</label><input type="text" id="userPoolName" class="setting-input" placeholder="例如 team-a" /></div>
+          <div class="form-group"><label for="userPoolCount">已选节点</label><input type="text" id="userPoolCount" class="setting-input" readonly /></div>
+        </div>
+        <div class="form-group" style="margin-top:12px;">
+          <label for="userPoolUsers">绑定用户名（每行一个，不含 .会话ID）</label>
+          <textarea id="userPoolUsers" rows="3" class="setting-input" placeholder="alice&#10;bob" style="resize:vertical;font-size:12px;"></textarea>
+        </div>
+        <div class="form-group" style="margin-top:12px;">
+          <label for="userPoolNodeSearch">池内节点（不勾选表示使用全部节点）</label>
+          <input type="search" id="userPoolNodeSearch" class="setting-input" placeholder="搜索节点名称或标签" oninput="renderUserPoolNodePicker()" />
+          <div id="userPoolNodePicker" style="max-height:260px;overflow:auto;border:1px solid var(--border);border-radius:8px;margin-top:8px;padding:8px;"></div>
+        </div>
+        <div class="form-help" style="margin-top:8px;">池内节点被删除或全部不可用时，该池用户不会被分配到池外节点。</div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn" onclick="closeModal('userPoolModalOverlay')">取消</button>
+        <button type="button" class="btn btn-primary" onclick="saveUserPool()">保存</button>
+      </div>
+    </div>
+  </div>
 
   <div class="toast-container" id="toastContainer" aria-live="polite" aria-atomic="false"></div>
 
@@ -1248,6 +1404,8 @@
     document.addEventListener('keydown',e => {
       if (e.key === 'Escape') {
         if (document.getElementById('nodeModalOverlay').classList.contains('show')) closeModal('nodeModalOverlay');
+        if (document.getElementById('extNodeModalOverlay').classList.contains('show')) closeModal('extNodeModalOverlay');
+        if (document.getElementById('userPoolModalOverlay').classList.contains('show')) closeModal('userPoolModalOverlay');
         if (document.body.classList.contains('nav-open')) { toggleSidebar(false); document.getElementById('mobileMenuBtn').focus(); }
       }
       if (e.key !== 'Tab') return;
@@ -1302,11 +1460,12 @@
       toggleSidebar(false); document.getElementById('mainContent').focus({preventScroll:true});
       if (name !== 'sessions') clearGeneratedLink();
       if (name === 'dashboard') setTimeout(updateDashboardCharts,100);
-      if (name === 'sessions') loadProxySessions();
+      if (name === 'sessions') { loadProxySessions(); loadExtAccess(); loadUserPools(); }
       if (name === 'manage') loadConfigNodes();
-      if (name === 'debug') loadDebugData();
+      if (name === 'debug') { loadDebugData(); loadExtStatus(); }
+      if (name === 'dashboard') loadExtStatus();
       syncLiveResources();
-      if (name === 'settings') loadSettingsPage();
+      if (name === 'settings') { loadSettingsPage(); loadExtConfig(); }
     }
     function toggleAutoRefresh() {
       isAutoRefresh=!isAutoRefresh;
@@ -1376,6 +1535,7 @@
         const data=await requestJSON('/api/nodes');
         if(epoch!==authEpoch || !authReady) return;
         allNodesCache=data.nodes || [];
+        extMetaCache=data.extension_meta || {};
         updateDashboardStats(data); applyNodeFilters();
         document.getElementById('lastUpdate').textContent=`已同步 ${new Date().toLocaleTimeString('zh-CN',{hour12:false})}`;
         document.getElementById('connectionStatus').classList.remove('stale');
@@ -1611,12 +1771,23 @@
     function applyNodeFilters(resetLimit=false) {
       if(resetLimit) nodeRenderLimit=300;
       const query=document.getElementById('nodeSearch').value.trim().toLowerCase(),status=document.getElementById('nodeStatusFilter').value;
-      const nodes=allNodesCache.filter(n => (currentRegionFilter === 'all' || (n.region||'other') === currentRegionFilter) && (status === 'all' || nodeStatus(n) === status) && (!query || [n.name,n.tag,n.region,n.country].some(v => String(v || '').toLowerCase().includes(query))));
+      const src=document.getElementById('nodeSourceFilter')?.value||'all';
+      const grade=document.getElementById('nodeGradeFilter')?.value||'all';
+      const nodes=allNodesCache.filter(n => {
+        const meta=extMetaFor(n), v=meta.verification||{}, nodeSrc=meta.source||'';
+        const srcOk = src==='all' || nodeSrc===src || (src==='inline' && !nodeSrc);
+        const gradeOk = grade==='all' || (grade==='none' ? !v.grade : v.grade===grade);
+        return (currentRegionFilter === 'all' || (n.region||'other') === currentRegionFilter)
+          && (status === 'all' || nodeStatus(n) === status)
+          && srcOk && gradeOk
+          && (!query || [n.name,n.tag,n.region,n.country,nodeSrc,v.exit_ip].some(v2 => String(v2 || '').toLowerCase().includes(query)));
+      });
       const sort=document.getElementById('nodeSort').value;
       if (sort === 'latency') nodes.sort((a,b) => (nodeStatus(a)==='healthy' ? (a.last_latency_ms>=0 ? a.last_latency_ms : Infinity) : Infinity)-(nodeStatus(b)==='healthy' ? (b.last_latency_ms>=0 ? b.last_latency_ms : Infinity) : Infinity));
       else if (sort === 'connections') nodes.sort((a,b) => (b.active_connections||0)-(a.active_connections||0));
       else if (sort === 'failures') nodes.sort((a,b) => (b.failure_count||0)-(a.failure_count||0));
       else if (sort === 'name') nodes.sort((a,b) => String(a.name||a.tag).localeCompare(String(b.name||b.tag),'zh-CN'));
+      else if (sort === 'score') nodes.sort((a,b) => ((extMetaFor(b).verification||{}).score||0)-((extMetaFor(a).verification||{}).score||0));
       document.getElementById('nodeFilterCount').textContent=`${nodes.length.toLocaleString()} / ${allNodesCache.length.toLocaleString()} 个节点`;
       renderNodes(nodes);
     }
@@ -1637,12 +1808,13 @@
         else if(status === 'unavailable') { badge='badge-error'; statusText='不可用'; }
         else { badge='badge-healthy'; statusText='健康在线'; }
 
-        return `<tr>
+        return `<tr class="ext-row" data-node-tag="${escapeHtml(n.tag||'')}" title="点击查看节点详情与验证结果">
           <td><span class="badge ${badge}" title="${escapeHtml(n.last_error || statusText)}">${statusText}</span></td>
           <td>${escapeHtml((n.region||'other').toUpperCase())}</td>
           <td>
             <div class="cell-trunc" style="font-weight: 500" title="${escapeHtml(n.name || n.tag)}">${escapeHtml(n.name || n.tag)}</div>
             <div class="cell-trunc" style="font-size: 11px; color: var(--text-muted)" title="${escapeHtml(n.tag)}">${escapeHtml(n.tag)}</div>
+            ${extNodeChips(n)}
           </td>
           <td class="tt-mono">${n.port || '-'}</td>
           <td>
@@ -2450,8 +2622,534 @@
       syncToggleButton(mode);
     })();
 
+    /* ============ 扩展能力：融入原有标签页（原生 JS，复用控制台主题） ============ */
+    let extMetaCache = {};        // /api/nodes 附带的节点来源与验证元数据
+    let extConfigCache = null;    // /api/ext/config
+    let extStatusCache = null;    // /api/ext/status
+    let extAccessCache = [];      // /api/ext/access
+    let extAvailable = true;      // 后端未启用扩展时优雅降级
+    let extSourceHealthOpen = false;
+
+    const EXT_SOURCE_LABELS = {
+      inline:'内置', nodes_file:'节点文件', subscription:'订阅',
+      mapping:'网络测绘', freepool:'免费代理池', external_pool:'外部代理池'
+    };
+    const EXT_ANON_LABELS = { high:'高匿', anonymous:'普匿', transparent:'透明', unknown:'未知' };
+    function extSourceLabel(s){ return EXT_SOURCE_LABELS[s] || (s ? s : '其他来源'); }
+    function extAnonLabel(s){ return EXT_ANON_LABELS[s] || (s ? s : '—'); }
+    function extSourceClass(s){ return s==='mapping' ? 'info' : (s==='freepool'||s==='external_pool') ? 'warn' : ''; }
+    function extGradeClass(g){ return g==='A'||g==='B' ? 'ok' : g==='C' ? 'warn' : g==='D' ? 'err' : ''; }
+    function extMetaFor(n){ return extMetaCache[n.name] || extMetaCache[n.tag] || {}; }
+    function extKV(k,v,cls){ return `<div class="ext-kv"><div class="k">${escapeHtml(k)}</div><div class="v ${cls||''}">${escapeHtml(String(v==null||v===''?'—':v))}</div></div>`; }
+
+    function extNodeChips(n){
+      const m=extMetaFor(n), v=m.verification||{};
+      if(!m.source) return '';
+      let out=`<div class="ext-chips"><span class="ext-chip ${extSourceClass(m.source)}">${escapeHtml(extSourceLabel(m.source))}</span>`;
+      if(m.source_detail) out+=`<span class="ext-chip">${escapeHtml(m.source_detail)}</span>`;
+      if(v.grade) out+=`<span class="ext-chip ${extGradeClass(v.grade)}">${escapeHtml(v.grade)} · ${v.score||0} 分</span>`;
+      if(v.exit_ip) out+=`<span class="ext-chip info">出口 ${escapeHtml(v.exit_ip)}</span>`;
+      if(v.anonymity) out+=`<span class="ext-chip ${v.anonymity==='high'?'ok':v.anonymity==='transparent'?'err':'warn'}">${escapeHtml(extAnonLabel(v.anonymity))}</span>`;
+      if(v.handshake) out+=`<span class="ext-chip">${escapeHtml(v.handshake)}</span>`;
+      if(v.genuine===true) out+=`<span class="ext-chip ok">真实代理</span>`;
+      else if(v.genuine===false) out+=`<span class="ext-chip err">真实性存疑</span>`;
+      if(v.mitm_suspected) out+=`<span class="ext-chip err">疑似 MITM</span>`;
+      return out+'</div>';
+    }
+
+    function openExtNodeDetail(tag){
+      const n=allNodesCache.find(x => x.tag===tag || x.name===tag);
+      if(!n) return;
+      const m=extMetaFor(n), v=m.verification||{};
+      const grid=document.getElementById('extNodeDetailGrid');
+      grid.innerHTML = [
+        extKV('名称',n.name||n.tag), extKV('标签 Tag',n.tag),
+        extKV('本地端口',n.port||'—'), extKV('地域',(n.region||'other').toUpperCase()),
+        extKV('运行状态',nodeStatus(n)), extKV('最近延迟',(n.last_latency_ms>=0?n.last_latency_ms+' ms':'—')),
+        extKV('来源',extSourceLabel(m.source)), extKV('来源明细',m.source_detail||'—'),
+        extKV('标签',(m.tags||[]).join(', ')||'—'), extKV('验证评分',v.grade?`${v.grade} · ${v.score}`:'未验证',v.grade?extGradeClass(v.grade):''),
+        extKV('出口 IP',v.exit_ip), extKV('直连 IP',v.direct_ip),
+        extKV('匿名度',v.anonymity?extAnonLabel(v.anonymity):'—'), extKV('协议握手',v.handshake),
+        extKV('成功率',v.success_rate!=null?Math.round(v.success_rate*100)+'%':'—'),
+        extKV('速率',v.speed_bps?Math.round(v.speed_bps/1024)+' KB/s':'—'),
+        extKV('地域实测',v.country_code||v.region),         extKV('DNS 泄漏风险',v.dns_leak_risk?'是':'否',v.dns_leak_risk?'err':'ok'),
+        extKV('检查时间',v.checked_at), extKV('跳过原因',v.skipped),
+        extKV('测绘宣称 IP',m.declared_ip||v.declared_ip),
+        extKV('真实性判定',v.genuine===true?'真实':v.genuine===false?'存疑':'未判定',v.genuine===false?'err':'ok'),
+        extKV('真实性原因',(v.genuine_reasons||[]).join('；')),
+        extKV('MITM 判定',v.mitm_suspected?'疑似恶意 MITM':'未见异常',v.mitm_suspected?'err':'ok'),
+        extKV('MITM 原因',(v.mitm_reasons||[]).join('；')),
+        extKV('证书指纹',v.cert_fingerprint), extKV('证书签发者',v.cert_issuer),
+        extKV('TLS 版本',v.tls_version),
+        extKV('响应体一致',v.body_hash_match==null?'—':(v.body_hash_match?'一致':'不一致'),v.body_hash_match===false?'err':'ok')
+      ].join('');
+      document.getElementById('extNodeDetailHint').textContent = v.error ? ('验证错误：'+v.error) : '点击表格行可查看其它节点；操作按钮仍可直接使用。';
+      showModal('extNodeModalOverlay');
+    }
+
+    function attachExtHandlers(){
+      const body=document.getElementById('nodesTableBody');
+      if(body) body.addEventListener('click',e=>{
+        if(e.target.closest('button')) return;
+        const tr=e.target.closest('tr[data-node-tag]');
+        if(tr) openExtNodeDetail(tr.dataset.nodeTag);
+      });
+    }
+
+    function toggleExtSourceHealth(){
+      extSourceHealthOpen=!extSourceHealthOpen;
+      const box=document.getElementById('extSourceHealth');
+      if(box) box.hidden=!extSourceHealthOpen;
+      const btn=document.getElementById('extSourceToggle');
+      if(btn) btn.textContent=extSourceHealthOpen?'收起':'展开';
+      if(extSourceHealthOpen) loadExtStatus();
+    }
+
+    async function extApi(path,opts){
+      if(!extAvailable) return null;
+      try{
+        const r=await apiFetch(path,opts);
+        return await r.json();
+      }catch(e){
+        // apiFetch throws on non-2xx; 501 means the extension subsystem is
+        // disabled, so degrade quietly instead of spamming the console.
+        if(/HTTP 501/.test(String(e.message||''))){ extAvailable=false; return null; }
+        throw e;
+      }
+    }
+
+    async function loadExtStatus(){
+      if(!extAvailable) return;
+      try{
+        const d=await extApi('/api/ext/status');
+        if(!d) return;
+        extStatusCache=d;
+        renderExtSourceStats(d); renderExtQuality(d);
+      }catch(e){ console.warn('[ext] status:',e.message); }
+    }
+
+    function renderExtSourceStats(d){
+      const stats=document.getElementById('extSourceStats');
+      if(stats) stats.innerHTML=[
+        extKV('扩展状态',d.enabled?'已启用':'未启用',d.enabled?'ok':'warn'),
+        extKV('候选节点',d.candidates), extKV('已入池',d.admitted,'ok'),
+        extKV('验证结果',(d.results||[]).length), extKV('准入分数线',d.verification&&d.verification.min_score),
+        extKV('最近刷新',d.last_refresh)
+      ].join('');
+      const body=document.getElementById('extSourceBody');
+      if(!body) return;
+      const rows=(d.outcomes||[]).map(o=>{
+        const state=o.skipped?'等待调度':o.error?'失败':'成功';
+        const cls=o.error?'err':o.skipped?'warn':'ok';
+        const kindLabel=o.provider.startsWith('mapping:')?'网络测绘':o.provider==='freepool'?'免费代理池':'内置预设';
+        return `<tr><td>${escapeHtml(o.provider)}</td><td>${escapeHtml(kindLabel)}</td><td><span class="ext-chip ${cls}">${state}</span></td><td>${o.nodes||0}</td><td class="tt-mono">${escapeHtml(o.error||'')}</td><td>${escapeHtml(o.fetched_at||'—')}</td></tr>`;
+      }).join('');
+      body.innerHTML=rows||'<tr><td colspan="6">暂无来源，请在「系统设置 → 节点来源」添加。</td></tr>';
+    }
+
+    function renderExtQuality(d){
+      const box=document.getElementById('extQualityStats');
+      if(!box) return;
+      const rs=d.results||[];
+      const grades={A:0,B:0,C:0,D:0}, anon={};
+      let lat=0,latN=0,ips=new Set(),fakes=0,mitms=0;
+      rs.forEach(r=>{
+        if(grades[r.grade]!=null) grades[r.grade]++;
+        anon[r.anonymity||'unknown']=(anon[r.anonymity||'unknown']||0)+1;
+        if(r.latency_ms>0){lat+=r.latency_ms;latN++;}
+        if(r.exit_ip) ips.add(r.exit_ip);
+        if(r.genuine===false) fakes++;
+        if(r.mitm_suspected) mitms++;
+      });
+      const anonText=Object.keys(anon).map(k=>`${extAnonLabel(k)} ${anon[k]}`).join(' · ')||'—';
+      box.innerHTML=[
+        extKV('已验证代理',rs.length), extKV('A / B 级',grades.A+grades.B,'ok'),
+        extKV('C 级',grades.C,'warn'), extKV('D 级',grades.D,'err'),
+        extKV('平均延迟',latN?Math.round(lat/latN)+' ms':'—'), extKV('不同出口 IP',ips.size),
+        extKV('匿名度分布',anonText),
+        extKV('真实性存疑',fakes,fakes?'err':'ok'), extKV('疑似 MITM',mitms,mitms?'err':'ok')
+      ].join('');
+    }
+
+    async function extAction(path,label){
+      try{
+        showToast(label+'中…','info');
+        const d=await extApi(path,{method:'POST',timeoutMs:300000});
+        if(!d) { showToast('扩展功能未启用','error'); return; }
+        showToast(`${label}完成，已入池 ${d.admitted} 个节点`,'success');
+        await loadExtStatus(); await refresh();
+      }catch(e){ showToast(label+'失败：'+e.message,'error'); }
+    }
+    function extRefresh(){ return extAction('/api/ext/refresh','抓取并验证'); }
+    function extRecheck(){ return extAction('/api/ext/recheck','复检'); }
+
+    async function extVerifyOne(){
+      const el=document.getElementById('extVerifyProxy');
+      const raw=(el&&el.value||'').trim();
+      const box=document.getElementById('extVerifyResult');
+      if(!raw){ showToast('请输入代理 URL','error'); return; }
+      try{
+        const d=await extApi('/api/ext/verify?proxy='+encodeURIComponent(raw));
+        if(!d) { showToast('扩展功能未启用','error'); return; }
+        box.hidden=false; box.textContent=JSON.stringify(d,null,2);
+        showToast(`验证完成：${d.grade||'—'} · ${d.score||0} 分`,d.reachable?'success':'error');
+        await loadExtStatus();
+      }catch(e){ showToast('验证失败：'+e.message,'error'); }
+    }
+
+    async function loadExtAccess(){
+      if(!extAvailable) return;
+      try{
+        const d=await extApi('/api/ext/access');
+        if(!d) return;
+        extAccessCache=d.items||[];
+        renderExtAccess();
+      }catch(e){ console.warn('[ext] access:',e.message); }
+    }
+
+    function renderExtAccess(){
+      const body=document.getElementById('extAccessBody');
+      const empty=document.getElementById('extAccessEmpty');
+      if(!body) return;
+      if(empty) empty.hidden=extAccessCache.length>0;
+      body.innerHTML=extAccessCache.map((it,i)=>`<tr>
+        <td>${escapeHtml(it.name||'—')}</td><td class="tt-mono">${it.port||'—'}</td>
+        <td><span class="ext-chip ${extSourceClass(it.source)}">${escapeHtml(extSourceLabel(it.source))}</span></td>
+        <td>${it.grade?`<span class="ext-chip ${extGradeClass(it.grade)}">${escapeHtml(it.grade)} · ${it.score}</span>`:'—'}</td>
+        <td class="tt-mono" style="font-size:11px">${escapeHtml(it.masked_http||'—')}</td>
+        <td><button class="btn btn-sm" onclick="copyExtAccess(${i},'http_url')">复制 HTTP</button> <button class="btn btn-sm" onclick="copyExtAccess(${i},'socks5_url')">复制 SOCKS5</button></td>
+      </tr>`).join('');
+    }
+
+    async function copyExtAccess(i,key){
+      const it=extAccessCache[i]; if(!it) return;
+      try{ await navigator.clipboard.writeText(it[key]); showToast('已复制接入 URL（含真实凭据）','success'); }
+      catch(e){ showToast('复制失败：'+e.message,'error'); }
+    }
+
+    /* ---- 节点来源 / 验证策略：图形化配置（系统设置页） ---- */
+    function extGetPath(obj,path){ return path.split('.').reduce((o,k)=>o==null?undefined:o[k],obj); }
+    function extSetPath(obj,path,val){
+      const parts=path.split('.'); let cur=obj;
+      for(let i=0;i<parts.length-1;i++){
+        const k=parts[i], nextNum=/^\d+$/.test(parts[i+1]);
+        if(cur[k]==null) cur[k]=nextNum?[]:{};
+        cur=cur[k];
+      }
+      cur[parts[parts.length-1]]=val;
+    }
+    function extField(path,label,type,value,extra){
+      extra=extra||{};
+      const id='extf_'+path.replace(/[^A-Za-z0-9]/g,'_');
+      const attrs=`id="${id}" data-ext-path="${escapeHtml(path)}" data-ext-type="${type}"`;
+      let ctrl;
+      if(type==='checkbox' && value===null) value=true; // omitted switch defaults to enabled
+      if(type==='checkbox') ctrl=`<div class="checkbox-row"><input type="checkbox" ${attrs} ${value?'checked':''}><label for="${id}">启用</label></div>`;
+      else if(type==='list') ctrl=`<input type="text" ${attrs} class="setting-input" value="${escapeHtml(Array.isArray(value)?value.join(', '):(value||''))}" placeholder="${escapeHtml(extra.ph||'')}">`;
+      else if(type==='select') ctrl=`<select ${attrs} class="setting-input">${(extra.options||[]).map(o=>`<option value="${escapeHtml(o)}" ${o===value?'selected':''}>${escapeHtml(o)}</option>`).join('')}</select>`;
+      else if(type==='textarea'){
+        const tv = (value!=null && typeof value==='object') ? JSON.stringify(value,null,2) : (value==null?'':String(value));
+        ctrl=`<textarea ${attrs} class="setting-input" rows="${extra.rows||3}" style="resize:vertical;font-size:12px">${escapeHtml(tv)}</textarea>`;
+      }
+      else ctrl=`<input type="${type==='number'?'number':'text'}" ${attrs} class="setting-input" value="${escapeHtml(value==null?'':String(value))}" placeholder="${escapeHtml(extra.ph||'')}">`;
+      return `<div class="form-group"><label for="${id}">${escapeHtml(label)}</label>${ctrl}${extra.help?`<span class="form-help">${escapeHtml(extra.help)}</span>`:''}</div>`;
+    }
+    function extGrid(fields,base){ return `<div class="form-grid">${fields.map(f=>extField(base+f[0],f[1],f[2],extGetPath(extConfigCache,base+f[0]),f[3]||{})).join('')}</div>`; }
+
+    const EXT_ROOT_FIELDS=[
+      ['enabled','启用扩展来源与验证','checkbox'],
+      ['outbound_proxy','来源出站代理','text',{ph:'留空则由容器环境变量决定',help:'build 阶段不使用代理'}],
+      ['cache_file','节点缓存文件','text',{ph:'extension_nodes.txt'}]
+    ];
+    const EXT_GROUP_FIELDS=[
+      ['enabled','启用该组来源','checkbox'], ['interval','抓取间隔','text',{ph:'6h'}],
+      ['timeout','请求超时','text',{ph:'20s'}], ['concurrency','并发数','number'],
+      ['max_results','结果上限','number'], ['rate_limit_per_min','每分钟请求上限','number']
+    ];
+    const EXT_VERIFY_FIELDS=[
+      ['enabled','启用全维度验证','checkbox'], ['echo_ip_url','出口 IP 回显','text'],
+      ['echo_headers_url','请求头回显','text'], ['echo_download_url','速率探测','text'],
+      ['region_url','地域查询模板','text',{help:'支持 {ip} 占位符'}],
+      ['region_disabled','关闭地域实测','checkbox'], ['direct_ip_url','直连 IP 回显','text'],
+      ['timeout','单次超时','text',{ph:'8s'}], ['concurrency','验证并发','number'],
+      ['retries','复检次数','number'], ['retry_interval','复检间隔','text',{ph:'200ms'}],
+      ['rate_limit_per_min','每分钟请求上限','number'], ['min_score','准入分数线','number'],
+      ['recheck_interval','定时复检间隔','text',{ph:'10m'}], ['max_failures','连续失败剔除阈值','number'],
+      ['no_proxy','免代理目标','text',{ph:'proxy-pool,proxy-redis,localhost,127.0.0.1'}]
+    ];
+    const EXT_PROVIDER_BASE=[
+      ['name','名称','text'], ['enabled','启用该来源','checkbox'],
+      ['endpoint','API 地址','text'], ['method','请求方法','select',{options:['GET','POST','PUT']}],
+      ['auth.type','鉴权方式','select',{options:['none','query','header','bearer','basic']}],
+      ['auth.key_name','凭据参数名','text'],
+      ['auth.key_env','凭据环境变量名','text',{help:'仅填变量名，明文密钥由 .env 注入'}],
+      ['query_param','搜索词参数名','text'], ['query','搜索词 / 语法','text'],
+      ['response.format','响应格式','select',{options:['json','text']}],
+      ['response.results_path','结果路径','text',{ph:'results'}],
+      ['response.fields.host','主机字段','text'], ['response.fields.port','端口字段','text'],
+      ['response.fields.default_protocol','默认协议','text',{ph:'http'}],
+      ['interval','该源抓取间隔','text'], ['max_results','该源结果上限','number']
+    ];
+    const EXT_PROVIDER_ADV=[
+      ['response.text_pattern','文本提取正则','text'],
+      ['response.fields.protocol','协议字段','text'], ['response.fields.username','用户名字段','text'],
+      ['response.fields.password','密码字段','text'], ['response.fields.name','名称字段','text'],
+      ['auth.username','Basic 用户名','text'], ['auth.password_env','Basic 密码环境变量','text'],
+      ['pagination.enabled','启用分页','checkbox'], ['pagination.param','页码参数','text'],
+      ['pagination.start','起始页','number'], ['pagination.max_pages','最大页数','number'],
+      ['pagination.size_param','每页参数','text'], ['pagination.size','每页条数','number'],
+      ['extra_params','额外请求参数 (JSON)','textarea',{rows:2,ph:'{"fields":"ip,port"}'}]
+    ];
+    const EXT_FETCHER_FIELDS=[
+      ['name','名称','text'], ['enabled','启用该源','checkbox'], ['url','抓取地址','text'],
+      ['format','响应格式','select',{options:['text','json']}], ['json_path','JSON 结果路径','text'],
+      ['text_pattern','文本提取正则','text'], ['protocol','默认协议','text',{ph:'http'}]
+    ];
+    const EXT_EXTERNAL_FIELDS=[
+      ['enabled','启用外部 proxy_pool','checkbox'], ['base_url','服务地址','text',{ph:'http://proxy-pool:5010'}],
+      ['get_path','取代理路径','text',{ph:'/get/'}], ['count_path','统计路径','text',{ph:'/count/'}],
+      ['batch','单次取回数量','number'], ['timeout','超时','text',{ph:'10s'}]
+    ];
+    const EXT_PRESET_FIELDS=[
+      ['enabled','启用该平台','checkbox'],
+      ['key_env','凭据环境变量名','text',{help:'仅填变量名，明文密钥由 .env 注入'}],
+      ['email_env','FOFA 旧账号邮箱环境变量（可选）','text',{ph:'FOFA_EMAIL'}],
+      ['query','搜索语法','text'], ['size','结果条数','number'],
+      ['encoding','查询 base64 编码','select',{options:['url','std']}]
+    ];
+    const EXT_PRESET_LABELS={fofa:'FOFA',hunter:'Hunter 鹰图',quake:'Quake 360'};
+    const EXT_PRESET_ENV={fofa:'FOFA_KEY',hunter:'HUNTER_API_KEY',quake:'QUAKE_TOKEN'};
+    const EXT_AUTHENTICITY_FIELDS=[
+      ['enabled','启用真实性判定','checkbox'], ['require_exit_differs','出口 IP 必须不同于直连 IP','checkbox'],
+      ['require_declared_match','出口 IP 必须等于测绘宣称 IP','checkbox'],
+      ['check_url','真实性探测目标','text'], ['expect_keyword','响应体期望关键字','text'],
+      ['expect_sha256','响应体期望 SHA-256','text',{help:'填写后优先于关键字校验'}],
+      ['check_status','校验 HTTP 状态码','checkbox'], ['follow_redirect','允许跟随重定向','checkbox'],
+      ['action','判定失败处置','select',{options:['reject','mark','downgrade']}]
+    ];
+    const EXT_MITM_FIELDS=[
+      ['enabled','启用恶意 MITM 判定','checkbox'], ['probe_url','可信 HTTPS 探测目标','text'],
+      ['verify_certificate','L1 严格证书校验','checkbox'], ['compare_cert_baseline','L2 证书/公钥基线比对','checkbox'],
+      ['compare_body_hash','L3 响应体哈希比对','checkbox'], ['check_headers','L4 注入头/降级检测','checkbox'],
+      ['trusted_fingerprints','L5 可信证书指纹（逗号分隔）','list'],
+      ['blacklist_ips','L5 出口 IP 黑名单（逗号分隔）','list'],
+      ['blacklist_fingerprints','L5 证书指纹黑名单（逗号分隔）','list'],
+      ['action','疑似 MITM 处置','select',{options:['reject','mark','downgrade']}]
+    ];
+
+    function renderExtConfig(){
+      if(!extConfigCache) return;
+      const root=document.getElementById('extConfigRoot');
+      if(root) root.innerHTML=`<div class="form-grid">${EXT_ROOT_FIELDS.map(f=>extField(f[0],f[1],f[2],extGetPath(extConfigCache,f[0]),f[3]||{})).join('')}</div>
+        <div style="margin-top:14px;font-size:12px;color:var(--text-muted)">网络测绘组参数</div>
+        ${extGrid(EXT_GROUP_FIELDS,'mapping.')}
+        <div style="margin-top:14px;font-size:12px;color:var(--text-muted)">免费代理组参数</div>
+        ${extGrid(EXT_GROUP_FIELDS,'freepool.')}`;
+      const presets=document.getElementById('extPresetSources');
+      if(presets) presets.innerHTML=(extConfigCache.mapping&&extConfigCache.mapping.presets||[]).map((p,i)=>{
+        const base=`mapping.presets.${i}.`;
+        const label=EXT_PRESET_LABELS[p.platform]||p.platform||'未命名平台';
+        return `<div class="ext-source-item">
+          <div class="ext-source-head"><span class="ext-source-title">${escapeHtml(label)}</span>
+          <span class="form-help">${escapeHtml(EXT_PRESET_ENV[p.platform]||p.key_env||'')}</span></div>
+          <div class="form-grid">${EXT_PRESET_FIELDS.map(f=>extField(base+f[0],f[1],f[2],extGetPath(extConfigCache,base+f[0]),f[3]||{})).join('')}</div>
+        </div>`;
+      }).join('')||'<div class="form-help">暂无内置预设。</div>';
+      const mp=document.getElementById('extMappingSources');
+      if(mp) mp.innerHTML=(extConfigCache.mapping&&extConfigCache.mapping.providers||[]).map((p,i)=>{
+        const base=`mapping.providers.${i}.`;
+        return `<div class="ext-source-item">
+          <div class="ext-source-head"><span class="ext-source-title">${escapeHtml(p.name||'未命名来源')}</span>
+          <button type="button" class="btn btn-sm btn-danger" onclick="extDeleteSource('mapping',${i})">删除</button></div>
+          ${extGrid(EXT_PROVIDER_BASE,base)}
+          <details style="margin-top:10px;"><summary style="cursor:pointer;color:var(--text-muted);font-size:12px;">高级字段 · 分页 / 字段映射 / 额外参数</summary>
+          <div style="margin-top:10px;">${extGrid(EXT_PROVIDER_ADV,base)}</div></details>
+        </div>`;
+      }).join('')||'<div class="form-help">暂无网络测绘来源，点击「添加来源」新增。</div>';
+      const fp=document.getElementById('extFreeSources');
+      if(fp) fp.innerHTML=(extConfigCache.freepool&&extConfigCache.freepool.fetchers||[]).map((f,i)=>{
+        const base=`freepool.fetchers.${i}.`;
+        return `<div class="ext-source-item"><div class="ext-source-head"><span class="ext-source-title">${escapeHtml(f.name||'未命名来源')}</span>
+          <button type="button" class="btn btn-sm btn-danger" onclick="extDeleteSource('freepool',${i})">删除</button></div>
+          ${extGrid(EXT_FETCHER_FIELDS,base)}</div>`;
+      }).join('')||'<div class="form-help">暂无免费代理源，点击「添加来源」新增。</div>';
+      const ex=document.getElementById('extExternalSource');
+      if(ex) ex.innerHTML=`<div class="ext-source-item">${extGrid(EXT_EXTERNAL_FIELDS,'freepool.external_api.')}</div>`;
+      const vf=document.getElementById('extVerificationFields');
+      if(vf) vf.innerHTML=`<div class="form-grid">${EXT_VERIFY_FIELDS.map(f=>extField('verification.'+f[0],f[1],f[2],extGetPath(extConfigCache,'verification.'+f[0]),f[3]||{})).join('')}</div>
+        <div class="ext-actions" style="margin-top:12px;"><button type="button" class="btn btn-sm" onclick="extRecheck()">立即复检全部</button></div>`;
+      const af=document.getElementById('extAuthenticityFields');
+      if(af) af.innerHTML=`<div class="form-grid">${EXT_AUTHENTICITY_FIELDS.map(f=>extField('verification.authenticity.'+f[0],f[1],f[2],extGetPath(extConfigCache,'verification.authenticity.'+f[0]),f[3]||{})).join('')}</div>`;
+      const mf=document.getElementById('extMITMFields');
+      if(mf) mf.innerHTML=`<div class="form-grid">${EXT_MITM_FIELDS.map(f=>extField('verification.mitm.'+f[0],f[1],f[2],extGetPath(extConfigCache,'verification.mitm.'+f[0]),f[3]||{})).join('')}</div>`;
+    }
+
+    async function loadExtConfig(){
+      if(!extAvailable){
+        const root=document.getElementById('extConfigRoot');
+        if(root) root.innerHTML='<div class="form-help">扩展功能未启用（extension.enabled = false），请先在配置文件开启后重启服务。</div>';
+        return;
+      }
+      try{
+        const d=await extApi('/api/ext/config');
+        if(!d) { const root=document.getElementById('extConfigRoot'); if(root) root.innerHTML='<div class="form-help">扩展功能未启用（extension.enabled = false）。</div>'; return; }
+        extConfigCache=d; renderExtConfig();
+      }catch(e){ showToast('扩展配置读取失败：'+e.message,'error'); }
+    }
+
+    function extAddSource(kind){
+      if(!extConfigCache) return;
+      if(kind==='mapping'){
+        extConfigCache.mapping=extConfigCache.mapping||{};
+        extConfigCache.mapping.providers=extConfigCache.mapping.providers||[];
+        extConfigCache.mapping.providers.push({name:'mapping-'+(extConfigCache.mapping.providers.length+1),enabled:false,method:'GET',
+          auth:{type:'query',key_name:'key',key_env:'MAPPING_API_KEY'},
+          response:{format:'json',results_path:'results',fields:{default_protocol:'http'}}});
+      }else{
+        extConfigCache.freepool=extConfigCache.freepool||{};
+        extConfigCache.freepool.fetchers=extConfigCache.freepool.fetchers||[];
+        extConfigCache.freepool.fetchers.push({name:'free-'+(extConfigCache.freepool.fetchers.length+1),enabled:false,format:'text',protocol:'http'});
+      }
+      renderExtConfig(); showToast('已添加，请填写后点击「保存扩展配置」','info');
+    }
+    function extDeleteSource(kind,i){
+      if(!extConfigCache) return;
+      if(kind==='mapping'&&extConfigCache.mapping) extConfigCache.mapping.providers.splice(i,1);
+      if(kind==='freepool'&&extConfigCache.freepool) extConfigCache.freepool.fetchers.splice(i,1);
+      renderExtConfig();
+    }
+
+    function collectExtConfig(){
+      const cfg=JSON.parse(JSON.stringify(extConfigCache||{}));
+      document.querySelectorAll('[data-ext-path]').forEach(el=>{
+        const path=el.dataset.extPath, type=el.dataset.extType;
+        let val;
+        if(type==='checkbox') val=el.checked;
+        else if(type==='number') val=el.value===''?0:Number(el.value);
+        else if(type==='textarea'){
+          if(path.endsWith('extra_params')){
+            try{ val=el.value.trim()?JSON.parse(el.value):{}; }
+            catch(_){ throw new Error('额外请求参数不是合法 JSON'); }
+          }else val=el.value;
+        } else if(type==='list') val=el.value.split(',').map(s=>s.trim()).filter(Boolean);
+        else val=el.value;
+        extSetPath(cfg,path,val);
+      });
+      return cfg;
+    }
+
+    async function saveExtConfig(){
+      if(!extConfigCache) { showToast('配置尚未读取','error'); return; }
+      const btn=document.getElementById('extSaveBtn');
+      let payload;
+      try{ payload=collectExtConfig(); }catch(e){ showToast(e.message,'error'); return; }
+      if(btn) btn.disabled=true;
+      try{
+        const d=await extApi('/api/ext/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+        if(!d) { showToast('扩展功能未启用','error'); return; }
+        extConfigCache=d.config||payload; renderExtConfig();
+        showToast(d.message||'已保存并立即生效','success');
+        await loadExtStatus(); await refresh();
+      }catch(e){ showToast('保存失败：'+e.message,'error'); }
+      finally{ if(btn) btn.disabled=false; }
+    }
+
+    /* ---- 用户分池：按基础用户名划分节点子集 ---- */
+    let userPoolsCache = [];
+    let editingUserPoolIndex = -1;
+    let userPoolSelected = new Set();
+
+    async function loadUserPools(){
+      try{
+        const d=await requestJSON('/api/pool/user-pools');
+        userPoolsCache=d.pools||[];
+        renderUserPools();
+      }catch(e){ console.warn('[pools]', e.message); }
+    }
+
+    function renderUserPools(){
+      const body=document.getElementById('userPoolsBody');
+      const empty=document.getElementById('userPoolsEmpty');
+      if(!body) return;
+      if(empty) empty.hidden=userPoolsCache.length>0;
+      body.innerHTML=userPoolsCache.map((p,i)=>`<tr>
+        <td>${escapeHtml(p.name)}</td>
+        <td>${escapeHtml((p.users||[]).join(', '))}</td>
+        <td>${(p.nodes||[]).length ? escapeHtml(String((p.nodes||[]).length))+' 个' : '全部节点'}</td>
+        <td><button class="btn btn-sm" onclick="openUserPoolEditor(${i})">编辑</button>
+            <button class="btn btn-sm btn-danger" onclick="deleteUserPool(${i})">删除</button></td>
+      </tr>`).join('');
+    }
+
+    function openUserPoolEditor(index){
+      editingUserPoolIndex = (typeof index === 'number') ? index : -1;
+      const pool = editingUserPoolIndex >= 0 ? userPoolsCache[editingUserPoolIndex] : {name:'',users:[],nodes:[]};
+      document.getElementById('userPoolModalTitle').textContent = editingUserPoolIndex >= 0 ? '编辑用户分池' : '新增用户分池';
+      document.getElementById('userPoolName').value = pool.name || '';
+      document.getElementById('userPoolUsers').value = (pool.users||[]).join('\n');
+      document.getElementById('userPoolNodeSearch').value = '';
+      userPoolSelected = new Set(pool.nodes||[]);
+      renderUserPoolNodePicker();
+      showModal('userPoolModalOverlay');
+    }
+
+    function renderUserPoolNodePicker(){
+      const box=document.getElementById('userPoolNodePicker');
+      if(!box) return;
+      const q=(document.getElementById('userPoolNodeSearch')?.value||'').trim().toLowerCase();
+      const nodes=(allNodesCache||[]).filter(n=>!q || [n.name,n.tag].some(v=>String(v||'').toLowerCase().includes(q)));
+      const known=new Set((allNodesCache||[]).map(n=>n.tag));
+      const missing=[...userPoolSelected].filter(t=>!known.has(t));
+      const missingRows=missing.map(t=>`<label class="checkbox-row" style="padding:4px 2px;color:var(--warning);">
+          <input type="checkbox" checked onchange="toggleUserPoolNode('${escapeAttrJs(t)}',this.checked)">
+          <span>缺失节点 ${escapeHtml(t)}（当前节点列表中不存在）</span></label>`).join('');
+      const rows=nodes.map(n=>{
+        const checked=userPoolSelected.has(n.tag);
+        const meta=extMetaFor(n);
+        return `<label class="checkbox-row" style="padding:4px 2px;">
+          <input type="checkbox" ${checked?'checked':''} onchange="toggleUserPoolNode('${escapeAttrJs(n.tag)}',this.checked)">
+          <span>${escapeHtml(n.name||n.tag)} <span class="form-help">${escapeHtml(n.tag)} · ${escapeHtml(extSourceLabel(meta.source))}</span></span>
+        </label>`;
+      }).join('');
+      box.innerHTML=(missingRows+rows)||'<div class="form-help">暂无匹配节点。</div>';
+      const count=document.getElementById('userPoolCount');
+      if(count) count.value=userPoolSelected.size ? `${userPoolSelected.size} 个` : '全部';
+    }
+
+    function toggleUserPoolNode(tag,checked){
+      if(checked) userPoolSelected.add(tag); else userPoolSelected.delete(tag);
+      renderUserPoolNodePicker();
+    }
+
+    async function saveUserPool(){
+      const name=(document.getElementById('userPoolName').value||'').trim();
+      if(!name){ showToast('请填写池名','error'); return; }
+      const users=(document.getElementById('userPoolUsers').value||'').split('\n').map(s=>s.trim()).filter(Boolean);
+      if(!users.length){ showToast('请至少填写一个用户名','error'); return; }
+      const next=userPoolsCache.map(p=>({...p}));
+      const entry={name,users,nodes:[...userPoolSelected]};
+      if(editingUserPoolIndex>=0) next[editingUserPoolIndex]=entry; else next.push(entry);
+      await putUserPools(next);
+    }
+
+    async function deleteUserPool(index){
+      if(!confirm('确认删除该分池？该池用户将回落到默认池（全部节点）。')) return;
+      await putUserPools(userPoolsCache.filter((_,i)=>i!==index));
+    }
+
+    async function putUserPools(pools){
+      try{
+        const r=await apiFetch('/api/pool/user-pools',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({pools})});
+        const d=await r.json();
+        userPoolsCache=d.pools||pools;
+        renderUserPools();
+        closeModal('userPoolModalOverlay');
+        showToast(d.message||'已保存并立即生效','success');
+      }catch(e){ showToast('保存失败：'+e.message,'error'); }
+    }
+
     // Init App
-    checkAuth().then(ok => { if(ok) { refresh(); startAutoRefresh(); } });
+    checkAuth().then(ok => { if(ok) { attachExtHandlers(); refresh(); loadExtStatus(); loadUserPools(); startAutoRefresh(); } });
 
     // Fetch GitHub stars
     fetch('https://api.github.com/repos/jasonwong1991/easy_proxies')

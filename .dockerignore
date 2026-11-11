@@ -12,6 +12,7 @@
 .DS_Store
 Dockerfile
 *.md
+!THIRD_PARTY_NOTICES.md
 bin
 coverage.*
 **/node_modules

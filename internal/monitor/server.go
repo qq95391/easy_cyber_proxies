@@ -112,6 +112,7 @@ type Server struct {
 
 	subRefresher SubscriptionRefresher
 	nodeMgr      NodeManager
+	extHandler   http.Handler
 }
 
 // NewServer constructs a server; it can be nil when disabled.
@@ -159,6 +160,8 @@ func NewServer(cfg Config, mgr *Manager, logger *log.Logger) *Server {
 	mux.HandleFunc("/api/reload", s.withAuth(s.handleReload))
 	mux.HandleFunc("/api/traffic", s.withAuth(s.handleTraffic))
 	mux.HandleFunc("/api/logs", s.withAuth(s.handleLogs))
+	mux.HandleFunc("/api/ext/", s.withAuth(s.handleExtension))
+	mux.HandleFunc("/api/pool/user-pools", s.withAuth(s.handleUserPools))
 	s.srv = &http.Server{
 		Addr: cfg.Listen, Handler: mux,
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second,
@@ -175,6 +178,29 @@ func (s *Server) SetSubscriptionRefresher(sr SubscriptionRefresher) {
 		s.subRefresher = sr
 		s.cfgMu.Unlock()
 	}
+}
+
+// SetExtensionHandler mounts the extension management API/page.
+func (s *Server) SetExtensionHandler(h http.Handler) {
+	if s != nil {
+		s.cfgMu.Lock()
+		s.extHandler = h
+		s.cfgMu.Unlock()
+	}
+}
+
+func (s *Server) handleExtension(w http.ResponseWriter, r *http.Request) {
+	s.cfgMu.RLock()
+	h := s.extHandler
+	s.cfgMu.RUnlock()
+	if h == nil {
+		h = s.cfg.ExtensionHandler
+	}
+	if h == nil {
+		http.Error(w, "extension subsystem disabled", http.StatusNotImplemented)
+		return
+	}
+	h.ServeHTTP(w, r)
 }
 
 // SetNodeManager enables config-node CRUD endpoints.
@@ -363,6 +389,13 @@ func (s *Server) handleNodes(w http.ResponseWriter, r *http.Request) {
 			"available": sweepOK,
 			"failed":    sweepFail,
 		},
+	}
+	// Extension metadata is kept as a separate map keyed by node tag/name so
+	// the nodes array shape stays untouched for the existing dashboard.
+	if s.cfg.ExtensionMeta != nil {
+		payload["extension_meta"] = s.cfg.ExtensionMeta.NodeMetaMap()
+	} else {
+		payload["extension_meta"] = map[string]map[string]any{}
 	}
 	writeJSON(w, payload)
 }
@@ -938,6 +971,67 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleSettings handles GET/PUT for dynamic settings (external_ip, probe_target, skip_cert_verify, log).
+// handleUserPools manages the username → node-subset bindings. Rules are
+// published to the routing store immediately, so no core reload is required.
+func (s *Server) handleUserPools(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.cfgMu.RLock()
+		var pools []config.UserPoolConfig
+		if s.cfgSrc != nil {
+			pools = config.NormalizeUserPools(s.cfgSrc.Pool.UserPools)
+		}
+		s.cfgMu.RUnlock()
+		writeJSON(w, map[string]any{"pools": pools})
+	case http.MethodPut:
+		if !sameOriginMutation(r) {
+			writeStatusJSON(w, http.StatusForbidden, map[string]any{"error": "跨站请求已拒绝"})
+			return
+		}
+		var req struct {
+			Pools []config.UserPoolConfig `json:"pools"`
+		}
+		if err := decodeManagementJSON(w, r, 1<<20, &req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			writeJSON(w, map[string]any{"error": "请求格式错误"})
+			return
+		}
+		pools := config.NormalizeUserPools(req.Pools)
+		seen := make(map[string]bool, len(pools))
+		for _, p := range pools {
+			if seen[p.Name] {
+				writeStatusJSON(w, http.StatusBadRequest, map[string]any{"error": "池名重复：" + p.Name})
+				return
+			}
+			seen[p.Name] = true
+		}
+		s.cfgMu.Lock()
+		if s.cfgSrc == nil {
+			s.cfgMu.Unlock()
+			writeStatusJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "配置存储未初始化"})
+			return
+		}
+		previous := s.cfgSrc.Pool.UserPools
+		candidate := s.cfgSrc.SettingsSnapshot()
+		candidate.Pool.UserPools = pools
+		err := candidate.SaveManagementSettings()
+		if err != nil {
+			s.cfgSrc.Pool.UserPools = previous
+		} else {
+			s.cfgSrc.Pool.UserPools = pools
+		}
+		s.cfgMu.Unlock()
+		if err != nil {
+			writeStatusJSON(w, http.StatusInternalServerError, map[string]any{"error": "保存失败：" + err.Error()})
+			return
+		}
+		config.SetUserPools(pools)
+		writeJSON(w, map[string]any{"message": "已保存并立即生效", "pools": pools})
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:

@@ -140,7 +140,7 @@ func TestSessionIdentityIndexRespectsTriedHealthAndProtocol(t *testing.T) {
 	a, b := newSessionTestOutbound("a", N.NetworkTCP), newSessionTestOutbound("b", N.NetworkTCP, N.NetworkUDP)
 	p := newSessionTestPool(nil, a, b)
 	p.indexMembersLocked()
-	member, err := p.pickMemberForSession(N.NetworkTCP, nil, "identity-a")
+	member, err := p.pickMemberForSession(N.NetworkTCP, nil, "identity-a", "")
 	if err != nil || member.tag != "a" {
 		t.Fatalf("healthy indexed pin = %v, %v", member, err)
 	}
@@ -159,7 +159,7 @@ func TestSessionIdentityIndexRespectsTriedHealthAndProtocol(t *testing.T) {
 				p.members[0].shared.manualUntil = p.members[0].shared.blacklistedUntil
 				p.members[0].shared.mu.Unlock()
 			}
-			member, err := p.pickMemberForSession(test.network, test.tried, "identity-a")
+			member, err := p.pickMemberForSession(test.network, test.tried, "identity-a", "")
 			if err != nil || member.tag != "b" {
 				t.Fatalf("ineligible indexed pin was used: %v, %v", member, err)
 			}
@@ -217,7 +217,7 @@ func BenchmarkSessionIdentitySelection(b *testing.B) {
 				b.Run(name, func(b *testing.B) {
 					b.ReportAllocs()
 					for i := 0; i < b.N; i++ {
-						if _, err := p.pickMemberForSession(N.NetworkTCP, nil, pin); err != nil {
+						if _, err := p.pickMemberForSession(N.NetworkTCP, nil, pin, ""); err != nil {
 							b.Fatal(err)
 						}
 					}

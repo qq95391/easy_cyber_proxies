@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"sort"
 	"strconv"
 	"strings"
@@ -26,6 +27,13 @@ type Config struct {
 	ExternalIP       string // 外部 IP 地址，用于导出时替换 0.0.0.0
 	SkipCertVerify   bool   // 全局跳过 SSL 证书验证
 	ProbeConcurrency int    // 并发探测线程数（批量探测与周期健康检查共用）
+	// ExtensionHandler and ExtensionMeta are injected at construction time
+	// because Start() may block on its first health check, making a post-Start
+	// hook unreliable.
+	ExtensionHandler http.Handler
+	ExtensionMeta    interface {
+		NodeMetaMap() map[string]map[string]any
+	}
 }
 
 // NodeInfo is static metadata about a proxy entry.

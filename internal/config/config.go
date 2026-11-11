@@ -39,6 +39,7 @@ type Config struct {
 	ExternalIP          string                    `yaml:"external_ip"`   // 外部 IP 地址，用于导出时替换 0.0.0.0
 	LogLevel            string                    `yaml:"log_level"`
 	SkipCertVerify      bool                      `yaml:"skip_cert_verify"` // 全局跳过 SSL 证书验证
+	Extension           ExtensionConfig           `yaml:"extension"`        // 二开扩展：来源与验证
 
 	filePath string `yaml:"-"` // 配置文件路径，用于保存
 }
@@ -142,6 +143,9 @@ type PoolConfig struct {
 	// For pools with multiple members, each retry picks a different member when possible.
 	// For single-member pools (e.g. per-node multi-port pools), retries dial the same member.
 	RetryAttempts int `yaml:"retry_attempts,omitempty"`
+	// UserPools binds base usernames to explicit node subsets. Unmatched users
+	// use the default pool (all nodes). Selection is hot-swappable at runtime.
+	UserPools []UserPoolConfig `yaml:"user_pools,omitempty"`
 }
 
 // RetryEnabledOrDefault reports whether retry is enabled (default true).
@@ -227,12 +231,17 @@ type SubscriptionFetchOptions struct {
 
 // NodeConfig describes a single upstream proxy endpoint expressed as URI.
 type NodeConfig struct {
-	Name     string     `yaml:"name" json:"name"`
-	URI      string     `yaml:"uri" json:"uri"`
-	Port     uint16     `yaml:"port,omitempty" json:"port,omitempty"`
-	Username string     `yaml:"username,omitempty" json:"username,omitempty"`
-	Password string     `yaml:"password,omitempty" json:"password,omitempty"`
-	Source   NodeSource `yaml:"-" json:"source,omitempty"` // Runtime only, not persisted
+	Name         string     `yaml:"name" json:"name"`
+	URI          string     `yaml:"uri" json:"uri"`
+	Port         uint16     `yaml:"port,omitempty" json:"port,omitempty"`
+	Username     string     `yaml:"username,omitempty" json:"username,omitempty"`
+	Password     string     `yaml:"password,omitempty" json:"password,omitempty"`
+	Source       NodeSource `yaml:"-" json:"source,omitempty"` // Runtime only, not persisted
+	SourceDetail string     `yaml:"source_detail,omitempty" json:"source_detail,omitempty"`
+	Tags         []string   `yaml:"tags,omitempty" json:"tags,omitempty"`
+	// DeclaredIP is the IP claimed by a mapping result. Verification compares
+	// it with the observed exit IP to detect hijacked or relayed candidates.
+	DeclaredIP string `yaml:"declared_ip,omitempty" json:"declared_ip,omitempty"`
 }
 
 // NodeKey returns a stable identifier for the node, used to preserve port
@@ -510,7 +519,7 @@ func (c *Config) normalize() error {
 		c.Nodes = append(c.Nodes, subNodes...)
 	}
 
-	if len(c.Nodes) == 0 {
+	if len(c.Nodes) == 0 && !c.Extension.Enabled {
 		return errors.New("config.nodes cannot be empty (configure nodes in config or use nodes_file)")
 	}
 	// portCursor is an int (not uint16) so the >65535 exhaustion guard fires
@@ -1271,6 +1280,32 @@ func fetchSubscriptionWithClient(ctx context.Context, client *http.Client, subUR
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	// Inline content: inline:<base64 of Clash YAML or URI list>, or plain text.
+	if strings.HasPrefix(subURL, "inline:") {
+		content := strings.TrimPrefix(subURL, "inline:")
+		if decoded, err := decodeProxyBase64(content); err == nil {
+			content = string(decoded)
+		}
+		return parseSubscriptionContent(content)
+	}
+	// Local subscription files, including Windows drive-letter paths.
+	localPath := ""
+	if strings.HasPrefix(subURL, "file://") {
+		localPath = strings.TrimPrefix(subURL, "file://")
+	} else if probe, err := url.Parse(subURL); err == nil && (probe.Scheme == "" || len(probe.Scheme) == 1) {
+		localPath = subURL
+	}
+	if localPath != "" {
+		data, err := os.ReadFile(localPath)
+		if err != nil {
+			return nil, fmt.Errorf("read subscription file: %w", err)
+		}
+		if len(data) > maxSubscriptionBodySize {
+			return nil, fmt.Errorf("subscription file exceeds %d bytes", maxSubscriptionBodySize)
+		}
+		return parseSubscriptionContent(string(data))
+	}
+
 	parsed, err := url.Parse(subURL)
 	if err != nil {
 		return nil, fmt.Errorf("parse subscription url: %w", err)
@@ -1349,6 +1384,12 @@ func parseSubscriptionContent(content string) ([]NodeConfig, error) {
 	if isBase64(content) {
 		if decoded, err := decodeProxyBase64(content); err == nil {
 			content = string(decoded)
+			// A Base64-wrapped Clash YAML must be re-detected after decoding,
+			// otherwise its YAML structure is lost to plain line parsing.
+			trimmed := strings.TrimSpace(content)
+			if strings.HasPrefix(trimmed, "proxies:") || strings.Contains(content, "\nproxies:") {
+				return parseClashYAML(content)
+			}
 		}
 	}
 
@@ -1572,6 +1613,8 @@ func convertClashProxyToURI(p clashProxy) string {
 		return buildHysteriaURI(p)
 	case "http", "https":
 		return buildHTTPProxyURI(p)
+	case "socks5", "socks5h", "socks":
+		return buildSOCKSProxyURI(p)
 	default:
 		return ""
 	}
@@ -1589,6 +1632,32 @@ func buildHTTPProxyURI(p clashProxy) string {
 		} else {
 			port = 8080
 		}
+	}
+	u := &url.URL{
+		Scheme: scheme,
+		Host:   net.JoinHostPort(p.Server, strconv.Itoa(port)),
+	}
+	if p.Password != "" {
+		u.User = url.UserPassword(p.Username, p.Password)
+	} else if p.Username != "" {
+		u.User = url.User(p.Username)
+	}
+	if p.Name != "" {
+		u.Fragment = p.Name
+	}
+	return u.String()
+}
+
+// buildSOCKSProxyURI maps Clash socks5 entries, which the upstream parser
+// silently skipped (they fell through to the default branch).
+func buildSOCKSProxyURI(p clashProxy) string {
+	scheme := strings.ToLower(p.Type)
+	if scheme == "socks" {
+		scheme = "socks5"
+	}
+	port := int(p.Port)
+	if port == 0 {
+		port = 1080
 	}
 	u := &url.URL{
 		Scheme: scheme,

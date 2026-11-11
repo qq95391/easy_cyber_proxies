@@ -1,44 +1,85 @@
+# Easy Proxies 二开版 · 源码构建 + docker compose 部署
+# 用法： docker compose up -d --build
+# 参数与凭据统一放在 .env（由 .env.example 复制得到）。
+# 说明：build 阶段不注入任何代理参数（HTTP_PROXY / HTTPS_PROXY / ALL_PROXY / SOCKS5）。
+
 services:
-  easy_proxies:
-    image: ghcr.io/jasonwong1991/easy_proxies:latest
-    container_name: easy_proxies
+  easy_proxies2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      # 不走代理：此处不设置 args，也不注入任何代理环境变量。
+      # Dockerfile 自带的 GOPROXY 仅用于拉取 Go 依赖；若需完全直连可自行添加：
+      #   args:
+      #     GOPROXY: direct
+    image: ${EASY_PROXIES_IMAGE:-easy_proxies:3.3.0-ext}
+    container_name: ${EASY_PROXIES_CONTAINER:-easy_proxies_ext}
     restart: unless-stopped
-    # 方式一：使用主机网络模式（推荐，支持端口自动重分配）
-    network_mode: host
-    user: "${UID:-10001}:${GID:-10001}"
-    # 方式二：手动映射端口（注释掉 network_mode，启用下面的 ports）
-    # ports:
-    #   # Pool 模式入口（pool/hybrid 模式使用）
-    #   - "2323:2323"
-    #   # Web 监控面板
-    #   - "9091:9091"
-    #   # Multi-port 端口范围（multi-port/hybrid 模式使用，根据节点数量调整）
-    #   - "24000-24200:24000-24200"
-    #
-    # 支持的运行模式（在 config.yaml 中配置）：
-    #   - pool: 单端口代理池，所有节点共享 2323 端口
-    #   - multi-port: 多端口模式，每个节点独立端口
-    #   - hybrid: 混合模式，同时启用 pool (2323) + multi-port (24000+)
-    #
-    # hybrid 模式说明：
-    #   - 代理池入口：http://0.0.0.0:2323 / socks5://0.0.0.0:2323（自动负载均衡）
-    #   - 独立节点入口：http://0.0.0.0:24000, ... 或 socks5://0.0.0.0:24000, ...（直连特定节点）
-    #   - 节点状态在两种入口间共享（黑名单同步）
-    #   - 端口冲突时自动重分配到下一个可用端口
-    #
-    # 使用示例：
-    #
-    #   方式一：映射配置目录（推荐，零配置启动）
-    #     docker run --user $(id -u):$(id -g) -v ./data:/etc/easy_proxies ghcr.io/jasonwong1991/easy_proxies:latest
-    #
-    #   方式二：映射配置文件（传统方式）
-    #     docker run -v ./config.yaml:/etc/easy_proxies/config.yaml -v ./nodes.txt:/etc/easy_proxies/nodes.txt ghcr.io/jasonwong1991/easy_proxies:latest
-    #
+
+    # 默认使用 bridge + 显式端口映射。
+    # 若改用主机网络：注释掉整个 ports 段，并取消下一行注释（两者不可同时启用）。
+    # network_mode: host
+    ports:
+      - "${PROXY_PORT:-32323}:2323"                                              # pool / hybrid 主入口（HTTP + SOCKS5）
+      - "${MGMT_PORT:-9091}:9091"                                              # 主面板（扩展能力已融入）与 /api/ext/*
+      #- "${MULTIPORT_RANGE:-24000-24200}:${MULTIPORT_RANGE:-24000-24200}"     # multi-port / hybrid 独立节点端口
+      # 按需启用：旧版 sticky 端口与 GeoIP 路由端口
+      # - "${STICKY_PORT:-2324}:2324"
+      # - "${GEOIP_PORT:-1221}:1221"
+
     volumes:
-      # 方式一：映射配置目录（首次启动自动生成 config.yaml 和 nodes.txt）
+      # 首次启动若 data/config.yaml 不存在，entrypoint.sh 会从镜像内 config.example.yaml 生成
       - ./data:/etc/easy_proxies
-      # 方式二：映射配置文件（需要预先创建）
-      # - ./config.yaml:/etc/easy_proxies/config.yaml
-      # - ./nodes.txt:/etc/easy_proxies/nodes.txt
-      # 日志映射目录（当从 WebUI 开启日志写到文件时有效）
       - ./logs:/app/logs
+
+    environment:
+      # 凭据由 .env 注入；在 data/config.yaml 的 mapping.providers[].auth.key_env 中引用这些变量名
+      MAPPING_API_KEY: ${MAPPING_API_KEY:-}
+      FOFA_KEY: ${FOFA_KEY:-}
+      FOFA_EMAIL: ${FOFA_EMAIL:-}
+      HUNTER_API_KEY: ${HUNTER_API_KEY:-}
+      SHODAN_API_KEY: ${SHODAN_API_KEY:-}
+      QUAKE_TOKEN: ${QUAKE_TOKEN:-}
+      ZOOMEYE_API_KEY: ${ZOOMEYE_API_KEY:-}
+      # 运行时出站代理（仅运行期生效，不影响 build）；留空表示直连
+      HTTP_PROXY: ${OUTBOUND_PROXY:-}
+      HTTPS_PROXY: ${OUTBOUND_PROXY:-}
+      NO_PROXY: ${NO_PROXY:-proxy-pool,proxy-redis,localhost,127.0.0.1}
+      TZ: ${TZ:-Asia/Shanghai}
+
+    # 不设置 healthcheck（按要求）；此处仅表达启动顺序，不等待就绪
+    depends_on:
+      - proxy-pool
+
+    # Linux 下建议以宿主机 uid:gid 运行以便写入 ./data；Windows / Docker Desktop 保持注释
+    # user: "${UID:-1000}:${GID:-1000}"
+
+  proxy-pool:
+    image: ${PROXY_POOL_IMAGE:-jhao104/proxy_pool:latest}
+    container_name: ${PROXY_POOL_CONTAINER:-proxy_pool_ext}
+    restart: unless-stopped
+    # 源码构建替代方案：把 jhao104/proxy_pool 源码放到 ./third_party/proxy_pool 后，
+    # 注释掉 image、取消下面三行注释即可「同样以 build 方式」部署。
+    # build:
+    #   context: ./third_party/proxy_pool
+    #   dockerfile: Dockerfile
+    environment:
+      DB_CONN: ${PROXY_POOL_DB_CONN:-redis://@proxy-redis:6379/0}
+      TABLE_NAME: ${PROXY_POOL_TABLE:-use_proxy}
+      POOL_SIZE_MIN: ${PROXY_POOL_MIN:-20}
+      TZ: ${TZ:-Asia/Shanghai}
+    ports:
+      - "${PROXY_POOL_PORT:-5010}:5010"       # /get/ /all/ /count/ /delete/
+    depends_on:
+      - proxy-redis
+    # 上游 jhao104/proxy_pool 镜像基于 alpine 且未安装 bash，但 ENTRYPOINT 硬编码
+    # `bash proxy_pool.sh`，直接启动必然报 "exec bash failed"。此处默认绕过该脚本：
+    # tini 负责信号转发，sh 启动调度进程并 exec API 进程；sleep 等待 Redis 就绪。
+    entrypoint: ["tini", "-g", "--", "sh", "-c", "sleep 3; python proxyPool.py schedule & exec python proxyPool.py server"]
+
+  proxy-redis:
+    image: ${REDIS_IMAGE:-redis:7-alpine}
+    container_name: ${REDIS_CONTAINER:-proxy_redis_ext}
+    restart: unless-stopped
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "no"]
+    # 6379 仅容器网络内可达，不映射到宿主机

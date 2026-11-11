@@ -11,6 +11,7 @@ import (
 
 	"easy_proxies/internal/boxmgr"
 	"easy_proxies/internal/config"
+	"easy_proxies/internal/ext"
 	"easy_proxies/internal/monitor"
 	"easy_proxies/internal/subscription"
 )
@@ -22,6 +23,16 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	}
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	// Build extension sources before the first sing-box build so freshly
+	// collected nodes are included in the initial runtime configuration.
+	extMgr := ext.New(cfg)
+	if extMgr.Enabled() {
+		if extNodes, err := extMgr.InitialNodes(ctx); err != nil {
+			fmt.Printf("[extension] initial fetch: %v\n", err)
+		} else if len(extNodes) > 0 {
+			cfg.Nodes = append(cfg.Nodes, extNodes...)
+		}
 	}
 	// Build monitor config
 	proxyUsername := cfg.Listener.Username
@@ -40,6 +51,12 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		ProxyPassword:    proxyPassword,
 		ExternalIP:       cfg.ExternalIP,
 		ProbeConcurrency: cfg.ProbeConcurrencyOrDefault(),
+	}
+	if extMgr.Enabled() {
+		// Inject before Start(): the box manager may block waiting for its
+		// first health check when no upstream node is reachable yet.
+		monitorCfg.ExtensionHandler = extMgr
+		monitorCfg.ExtensionMeta = extMgr
 	}
 
 	// Create and start BoxManager
@@ -68,6 +85,17 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		server.SetSubscriptionRefresher(subMgr)
 	}
 
+	// Extension sources publish freshly verified nodes through the same
+	// runtime reload path, and reuse the existing management server.
+	if extMgr.Enabled() {
+		extMgr.SetRuntime(boxMgr)
+		if server := boxMgr.MonitorServer(); server != nil {
+			server.SetExtensionHandler(extMgr)
+		}
+		extMgr.Start(ctx)
+		defer extMgr.Stop()
+	}
+
 	// Wait for shutdown signal
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -85,6 +113,11 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	defer shutdownCancel()
 
 	// Graceful shutdown sequence
+	if extMgr.Enabled() {
+		fmt.Println("Stopping extension orchestrator...")
+		extMgr.Stop()
+	}
+
 	fmt.Println("Stopping subscription manager...")
 	if subMgr != nil {
 		subMgr.Stop()

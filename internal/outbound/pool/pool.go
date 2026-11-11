@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"easy_proxies/internal/config"
 	"easy_proxies/internal/monitor"
 	"easy_proxies/internal/routing"
 
@@ -322,6 +323,7 @@ func (p *poolOutbound) DialContext(ctx context.Context, network string, destinat
 	if lease != nil {
 		stickyKey = ""
 	}
+	baseUser := baseUsernameFromCtx(ctx)
 	singleMember := len(p.options.Members) <= 1
 	var tried map[string]bool
 	if !singleMember && maxAttempts > 1 {
@@ -335,9 +337,9 @@ func (p *poolOutbound) DialContext(ctx context.Context, network string, destinat
 		}
 		var member *memberState
 		if lease != nil {
-			member, err = p.pickMemberForSession(network, tried, pinned)
+			member, err = p.pickMemberForSession(network, tried, pinned, baseUser)
 		} else {
-			member, err = p.pickMemberFiltered(network, tried, stickyKey)
+			member, err = p.pickMemberFiltered(network, tried, stickyKey, baseUser)
 		}
 		if err != nil {
 			if lastErr != nil {
@@ -412,6 +414,7 @@ func (p *poolOutbound) ListenPacket(ctx context.Context, destination M.Socksaddr
 	if lease != nil {
 		stickyKey = ""
 	}
+	baseUser := baseUsernameFromCtx(ctx)
 	singleMember := len(p.options.Members) <= 1
 	var tried map[string]bool
 	if !singleMember && maxAttempts > 1 {
@@ -427,9 +430,9 @@ func (p *poolOutbound) ListenPacket(ctx context.Context, destination M.Socksaddr
 		if lease != nil {
 			// UDP may use the TCP pin if supported, but capability filtering and
 			// packet retries must never migrate the primary TCP binding.
-			member, err = p.pickMemberForSession(N.NetworkUDP, tried, pinned)
+			member, err = p.pickMemberForSession(N.NetworkUDP, tried, pinned, baseUser)
 		} else {
-			member, err = p.pickMemberFiltered(N.NetworkUDP, tried, stickyKey)
+			member, err = p.pickMemberFiltered(N.NetworkUDP, tried, stickyKey, baseUser)
 		}
 		if err != nil {
 			if lastErr != nil {
@@ -548,16 +551,22 @@ func (p *poolOutbound) maxAttempts() int {
 // pickMemberFiltered selects a healthy member, optionally excluding tags in `tried`.
 // When `tried` is nil or every healthy member has been tried, falls back to picking
 // any healthy member (ensuring single-member pools retry the same node).
-func (p *poolOutbound) pickMemberFiltered(network string, tried map[string]bool, stickyKey string) (*memberState, error) {
-	return p.pickMemberFor(network, tried, stickyKey, "")
+func (p *poolOutbound) pickMemberFiltered(network string, tried map[string]bool, stickyKey, baseUser string) (*memberState, error) {
+	return p.pickMemberFor(network, tried, stickyKey, "", baseUser)
 }
 
-func (p *poolOutbound) pickMemberForSession(network string, tried map[string]bool, nodeID string) (*memberState, error) {
-	return p.pickMemberFor(network, tried, "", nodeID)
+func (p *poolOutbound) pickMemberForSession(network string, tried map[string]bool, nodeID, baseUser string) (*memberState, error) {
+	return p.pickMemberFor(network, tried, "", nodeID, baseUser)
 }
 
-func (p *poolOutbound) pickMemberFor(network string, tried map[string]bool, stickyKey, nodeID string) (*memberState, error) {
+func (p *poolOutbound) pickMemberFor(network string, tried map[string]bool, stickyKey, nodeID, baseUser string) (*memberState, error) {
 	now := time.Now()
+	// A matched user pool restricts selection to its explicit node tags. An
+	// unmatched user (or a pool with no nodes) uses the default pool: all nodes.
+	allow, poolName, matched := config.MatchUserPool(baseUser)
+	allowed := func(member *memberState) bool {
+		return !matched || allow == nil || allow[member.tag]
+	}
 
 	p.mu.Lock()
 	if len(p.members) == 0 {
@@ -573,6 +582,9 @@ func (p *poolOutbound) pickMemberFor(network string, tried map[string]bool, stic
 			p.indexMembersLocked()
 		}
 		for _, member := range p.membersByID[nodeID] {
+			if !allowed(member) {
+				continue
+			}
 			if !tried[member.tag] && (network == "" || common.Contains(member.outbound.Network(), network)) &&
 				(member.shared == nil || !member.shared.isBlacklisted(now)) {
 				p.mu.Unlock()
@@ -590,6 +602,23 @@ func (p *poolOutbound) pickMemberFor(network string, tried map[string]bool, stic
 			candidates = p.availableMembersLocked(now, network, candidates[:0])
 		}
 		p.mu.Unlock()
+	}
+
+	// Apply the user pool before the "no healthy proxy" check so a pool whose
+	// nodes are all unavailable reports a precise error instead of silently
+	// borrowing a node from another pool.
+	if matched && allow != nil && len(candidates) > 0 {
+		filtered := candidates[:0]
+		for _, m := range candidates {
+			if allow[m.tag] {
+				filtered = append(filtered, m)
+			}
+		}
+		candidates = filtered
+		if len(candidates) == 0 {
+			p.putCandidateBuffer(candidates)
+			return nil, E.New("user pool \"", poolName, "\" has no available member")
+		}
 	}
 
 	if len(candidates) == 0 {
@@ -722,6 +751,24 @@ func (p *poolOutbound) stickyKeyFromCtx(ctx context.Context) string {
 		return md.Source.AddrString()
 	}
 	return stickyFallbackKey
+}
+
+// baseUsernameFromCtx returns the proxy username without the ".session" suffix.
+// The session key is the full username, so trimming it is unambiguous even when
+// the base username itself contains dots (e.g. "wang.name").
+func baseUsernameFromCtx(ctx context.Context) string {
+	md := adapter.ContextFrom(ctx)
+	if md == nil {
+		return ""
+	}
+	user := strings.TrimSpace(md.User)
+	if user == "" {
+		return ""
+	}
+	if session := routing.SessionFromContext(ctx); session != "" {
+		return strings.TrimSuffix(user, "."+session)
+	}
+	return user
 }
 
 // selectMember picks a member, honouring stickiness when stickyKey is non-empty.

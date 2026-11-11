@@ -220,6 +220,9 @@ func Build(cfg *config.Config) (option.Options, error) {
 
 	// Build pool inbound (single entry point for all nodes)
 	if enablePoolInbound {
+		// Publish user-pool routing rules before the outbound is constructed so
+		// a fresh build and a hot update observe the same canonical form.
+		config.SetUserPools(cfg.Pool.UserPools)
 		inbound, err := buildPoolInbound(cfg)
 		if err != nil {
 			return option.Options{}, err

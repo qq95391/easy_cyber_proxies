@@ -8,7 +8,9 @@
 # pool: 单端口代理池，所有节点共享一个端口，自动负载均衡
 # multi-port: 多端口模式，每个节点独立端口
 # hybrid: 混合模式，同时启用 pool + multi-port
-mode: pool
+# 运行拓扑已固定为双栈：共享 pool 入口 + 每节点独立端口同时启动。
+# mode 字段不再生效（旧值会被忽略，保留仅供旧配置文件解析）。
+# mode: pool
 
 # 日志级别: debug, info, warn, error
 log_level: info
@@ -74,17 +76,23 @@ pool:
   # 真实传输故障立刻按 blacklist_duration 拉黑，不必等 failure_threshold 累计；
   # 429/超时类仍只按对应冷却处理。设为 false 则回到阈值累计逻辑（仍会自动换节点重试）
   blacklist_failed_pin: true
-  # 用户分池：按基础用户名把请求限制到显式的节点子集（仅 pool / hybrid 主入口生效）。
-  # 未匹配任何池的用户使用默认池 = 全部节点；池内节点不可用时不回落到池外。
-  # nodes 写节点 tag（WebUI 勾选生成）；留空表示该池使用全部节点。
-  # 匹配规则为「基础用户名」精确匹配，不含 ".会话ID" 后缀。
-  # user_pools:
-  #   - name: team-a
-  #     users: ["alice", "bob"]
-  #     nodes: ["hk-01", "jp-02", "us-03"]      # 精确 3 个节点
-  #   - name: team-b
-  #     users: ["carol"]
-  #     nodes: ["sg-01", "tw-02", "kr-03", "de-04", "uk-05"]   # 精确 5 个节点
+  # 用户 / 分池已统一由 WebUI「用户与分池」维护（accounts.json），
+  # 旧版 pool.user_pools 写入路径已停用，请勿再在本文件中配置分池。
+  # ───────────────────────────────────────────────────────────────
+  # 调用方零感知：改道与熔断
+  # ───────────────────────────────────────────────────────────────
+  # 一次请求内所有改道必须在该预算内完成，超时才向调用方返回失败（默认 3s）
+  switch_budget: 3s
+  # 单次上游拨号超时；留空表示沿用调用方 context（默认不启用）
+  # dial_timeout: 2s
+  # 主动健康探测周期（默认 5m，建议弱网络下调到 30s 并配合限速）
+  health_interval: 5m
+  # 每节点三态熔断（Closed/Open/HalfOpen）；false 可回到纯黑名单+冷却逻辑
+  enable_circuit_breaker: true
+  # 池内全部节点不可用时：none（默认，不回落）/ default_pool / direct
+  fallback: none
+  # 独立账号与分池由 WebUI「用户与分池」维护，数据落在本文件同目录的 accounts.json
+  # 变更即时生效，无需重载核心，也不会打断在途连接。
 
 # ───────────────────────────────────────────────────────────────
 # 会话路由与旧版粘性代理（仅 pool / hybrid 模式生效）

@@ -9,11 +9,11 @@ for (const script of scripts) new vm.Script(script);
 
 async function fixture() {
   const elements=new Map(),listeners=new Map(),timers=new Map(),intervals=new Map(),storage=new Map(); let nextID=0;
-  const document={hidden:false,activeElement:null,contains:()=>true,addEventListener:(type,fn)=>listeners.set(type,fn),querySelectorAll:()=>[],querySelector:()=>element('fake-nav'),body:{classList:{contains:()=>false,toggle:()=>{}}}};
+  const document={hidden:false,activeElement:null,contains:()=>true,addEventListener:(type,fn)=>listeners.set(type,fn),querySelectorAll:()=>[],querySelector:()=>element('fake-nav'),body:{classList:{contains:()=>false,toggle:()=>{}}},createElement:tag=>({tag,textContent:'',innerHTML:'',value:'',checked:false,disabled:false,style:{},dataset:{},classList:{add(){},remove(){},contains:()=>false,toggle(){}},appendChild(child){if(child&&child.textContent)this.innerHTML+=child.textContent;},setAttribute(){},addEventListener(){},focus(){},remove(){}})};
   function element(id) {
     if(!elements.has(id)) {
       const classes=new Set(id==='dashboardTab'?['active']:[]);
-      const el={id,value:'',textContent:'',innerHTML:'',hidden:false,style:{},dataset:{},checked:false,disabled:false,scrollTop:0,scrollHeight:10,options:[],classList:{contains:c=>classes.has(c),add:c=>classes.add(c),remove:c=>classes.delete(c),toggle(c,on){on?classes.add(c):classes.delete(c);}},addEventListener(){},setAttribute(){},removeAttribute(){},getClientRects:()=>[1],focus:()=>document.activeElement=el,querySelector:()=>element('fake-input'),querySelectorAll:()=>[],remove(){},appendChild(){},add(opt){this.options.push(opt);}};
+      const el={id,value:'',textContent:'',innerHTML:'',hidden:false,style:{},dataset:{},checked:false,disabled:false,scrollTop:0,scrollHeight:10,options:[],classList:{contains:c=>classes.has(c),add:c=>classes.add(c),remove:c=>classes.delete(c),toggle(c,on){on?classes.add(c):classes.delete(c);}},addEventListener(){},setAttribute(){},removeAttribute(){},getClientRects:()=>[1],focus:()=>document.activeElement=el,querySelector:()=>element('fake-input'),querySelectorAll:()=>[],remove(){},appendChild(child){if(child&&child.textContent)this.innerHTML+=child.textContent;},replaceChildren(){this.innerHTML='';},add(opt){this.options.push(opt);}};
       elements.set(id,el);
     }
     return elements.get(id);
@@ -27,7 +27,8 @@ async function fixture() {
   return {context,element,timers,intervals,listeners,run:code=>vm.runInContext(code,context)};
 }
 const nodes=()=>Array.from({length:10000},(_,i)=>({tag:`node-${i}`,name:`Fixture ${i}`,uri:'http://fixture.invalid:1',region:'us',source:'inline',initial_check_done:true,available:true,last_latency_ms:500-i%500,success_count:2,failure_count:1,timeline:Array.from({length:60},()=>({success:true,latency_ms:5}))}));
-const rows=el=>(el.innerHTML.match(/<tr>/g)||[]).length;
+// Detail rows (id="debugDetailN") are collapsed panels, not table records.
+const rows=el=>(el.innerHTML.match(/<tr(?![^>]*id="debugDetail)/g)||[]).length;
 
 test('10k config and diagnostics render only 300 rows; timeline is bounded',async()=>{
  const f=await fixture(); f.context.fixtureNodes=nodes(); f.run('configNodes=fixtureNodes; window._debugNodes=fixtureNodes; renderConfigNodes(); renderDebugNodes();');
@@ -81,4 +82,135 @@ test('disabled GeoIP zero interval loads a valid default without blocking settin
  f.context.fetch=async(path)=>new Response(JSON.stringify(path==='/api/settings'?{pool:{mode:'sequential'},geoip:{enabled:false,auto_update_interval:interval}}:{enabled:false,interval:'12h',subscriptions:[]}));
  await f.run('loadSettingsPage()');assert.equal(f.run('settingsLoaded'),true);assert.equal(f.element('settingGeoIPUpdateInterval').value,'24h');
  interval='6h';await f.run('loadSettingsPage()');assert.equal(f.element('settingGeoIPUpdateInterval').value,'6h');
+});
+
+test('account pool and user edit flows submit PUT with quota fields',async()=>{
+ const f=await fixture(),calls=[];
+ f.context.showToast=()=>{};
+ f.context.fetch=async(path,options)=>{calls.push({path,method:options&&options.method,body:options&&options.body});
+  return new Response(JSON.stringify({users:[],pools:[],audit:[]}),{headers:{'Content-Type':'application/json'}});};
+ f.run(`editAccountPool({name:'team-a',nodes:['n1'],fallback:'default_pool',enabled:true,note:'edge'})`);
+ assert.equal(f.element('accountPoolName').value,'team-a');
+ assert.equal(f.element('accountPoolName').disabled,true);
+ assert.equal(f.element('accountPoolSubmit').textContent,'保存修改');
+ assert.equal(f.element('accountPoolFallback').value,'default_pool');
+ await f.run('submitAccountPool()');
+ const poolCall=calls.find(c=>c.path==='/api/accounts/pools/team-a');
+ assert.ok(poolCall);assert.equal(poolCall.method,'PUT');
+ assert.equal(f.element('accountPoolName').disabled,false);
+ assert.equal(f.element('accountPoolSubmit').textContent,'新建分池');
+ f.run(`editAccountUser({username:'alice',display_name:'A',pool:'team-a',enabled:true,max_sessions:5,max_conns:2,note:'note',expires_at:'',credential_version:1})`);
+ assert.equal(String(f.element('accountMaxSessions').value),'5');
+ assert.equal(f.element('accountUsername').disabled,true);
+ await f.run('submitAccountUser()');
+ const userCall=calls.find(c=>c.path==='/api/accounts/users/alice');
+ assert.ok(userCall);assert.equal(userCall.method,'PUT');
+ const body=JSON.parse(userCall.body);
+ assert.equal(body.max_sessions,5);assert.equal(body.max_conns,2);assert.equal(body.note,'note');
+ assert.equal(body.password,'');
+});
+
+test('metrics window selector, SSE stream and node metric columns',async()=>{
+ const f=await fixture(),paths=[];
+ const payload={summary:{reroute_total:7,reroute_avg_ms:12.5,window:'5m',client_visible_failure_rate:0},
+  by_node:[{tag:'n1',reroute_total:4,avg_ms:9.5,circuit_state:'open',evictions:1,recoveries:2}],
+  events:[{ts:new Date().toISOString(),type:'reroute',from:'a',to:'b',duration_ms:8}],
+  series:[{ts:Math.floor(Date.now()/1000),reroutes:3,avg_ms:9.5}]};
+ f.context.fetch=async path=>{paths.push(path);return new Response(JSON.stringify(payload),{headers:{'Content-Type':'application/json'}});};
+ f.element('metricWindowSelect').value='5m';
+ await f.run('loadMetrics()');
+ assert.ok(paths.some(p=>p.includes('window=5m')));
+ assert.equal(f.element('metricReroutes').textContent,'7');
+ assert.equal(f.element('metricRerouteAvg').textContent,'12.5 ms');
+ assert.equal(f.element('metricWindow').textContent,'5m');
+ assert.ok(f.element('metricEvents').innerHTML.includes('reroute'));
+ f.run('connectMetricsSSE()');
+ const source=f.run('metricsSource');assert.ok(source);
+ source.onmessage({data:JSON.stringify(Object.assign({},payload,{summary:{reroute_total:9}}))});
+ assert.equal(f.element('metricReroutes').textContent,'9');
+ f.context.document.hidden=true;f.listeners.get('visibilitychange')();
+ assert.equal(source.closed,true);assert.equal(f.run('metricsSource'),null);
+ f.context.document.hidden=false;
+ f.run(`allNodesCache=[{tag:'n1',name:'N1',success_count:9,failure_count:1,last_latency_ms:20,available:true,initial_check_done:true}];applyNodeFilters();`);
+ const rows=f.element('nodesTableBody').innerHTML;
+ assert.ok(rows.includes('90.0%'));assert.ok(rows.includes('改道 4'));assert.ok(rows.includes('熔断 open'));
+});
+
+test('new account and metric panels reuse the existing design system',()=>{
+ const tab=html.slice(html.indexOf('id="accountsTab"'),html.indexOf('<!-- Session Routing Tab -->'));
+ assert.ok(tab.includes('class="form-grid"'),'forms must use form-grid');
+ assert.ok(tab.includes('class="table-container"'),'tables must use table-container');
+ assert.ok(tab.includes('class="panel-title"'),'headers must use panel-title');
+ assert.ok(tab.includes('class="empty-message"'),'empty states must use empty-message');
+ assert.ok((tab.match(/class="setting-input"/g)||[]).length>=9,'inputs must use setting-input');
+ assert.ok((tab.match(/scope="col"/g)||[]).length>=10,'table headers must declare scope');
+ assert.doesNotMatch(tab,/<input id="accountPoolName" placeholder=/,'no bare inputs');
+ assert.doesNotMatch(tab,/style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px"/,'no inline layout hack');
+ assert.match(html,/class="filter-toolbar" style="margin-top:16px"/,'metrics toolbar must use filter-toolbar');
+ assert.match(html,/btn\.className = action\.danger \? 'btn btn-sm btn-danger'/,'row actions must use btn-sm variants');
+});
+
+test('batch import and strict verification entry points exist',()=>{
+ for (const fragment of [
+  'id="nodeImportOverlay"','previewNodeImport','confirmNodeImport',
+  'verifyNodeQuality','/api/nodes/verify','/api/nodes/preview','/api/nodes/config/batch',
+ ]) {
+  assert.ok(html.includes(fragment),'missing '+fragment);
+ }
+});
+
+test('structured log view queries by level, category and keyword',async()=>{
+ const f=await fixture(),paths=[];
+ f.element('logsTab').classList.add('active');
+ f.element('logLevelFilter').value='WARN';
+ f.element('logCategoryFilter').value='access';
+ f.element('logSearch').value='example.com';
+ f.context.fetch=async path=>{paths.push(path);return new Response(JSON.stringify({logs:'',entries:[{ts:new Date().toISOString(),level:'WARN',category:'access',source:'node-1',message:'tcp alice -> example.com:443 via node-1 failed',fields:{target:'example.com:443'}}],total:1}),{headers:{'Content-Type':'application/json'}});};
+ await f.run('pollLogEntries()');
+ assert.ok(paths.some(p=>p.includes('level=WARN')));
+ assert.ok(paths.some(p=>p.includes('category=access')));
+ assert.ok(paths.some(p=>p.includes('q=example.com')));
+ assert.ok(f.element('logEntriesBody').innerHTML.includes('example.com'));
+ assert.equal(f.element('logEntryCount').textContent,'1 条');
+ assert.equal(f.element('logEntriesEmpty').hidden,true);
+ assert.ok(html.includes('id="logLevelFilter"')&&html.includes('id="logSearch"'));
+ assert.ok(html.includes('id="consoleLogs"'),'raw console view must remain available');
+});
+
+test('zero-sense settings load their windowed values',async()=>{
+ const f=await fixture();
+ f.context.fetch=async path=>new Response(JSON.stringify(path==='/api/settings'
+  ?{pool:{mode:'sequential',switch_budget:'4s',dial_timeout:'2s',health_interval:'30s',fallback:'default_pool',enable_circuit_breaker:false}}
+  :{enabled:false,interval:'12h',subscriptions:[]}),{headers:{'Content-Type':'application/json'}});
+ await f.run('loadSettingsPage()');
+ assert.equal(f.element('settingPoolSwitchBudget').value,'4s');
+ assert.equal(f.element('settingPoolDialTimeout').value,'2s');
+ assert.equal(f.element('settingPoolHealthInterval').value,'30s');
+ assert.equal(f.element('settingPoolFallback').value,'default_pool');
+ assert.equal(f.element('settingPoolCircuitEnabled').checked,false);
+});
+
+test('dashboard delete, diagnostics detail and direct warning',async()=>{
+ const f=await fixture();
+ assert.ok(html.includes('id="settingModeReadonly"'),'mode switch must be read-only');
+ assert.ok(!html.includes('id="settingMode"'),'legacy mode select must be gone');
+ assert.ok(html.includes('id="poolFallbackWarning"'),'direct fallback warning missing');
+
+ f.element('settingPoolFallback').value='direct';
+ f.run('syncFallbackWarning()');
+ assert.equal(f.element('poolFallbackWarning').hidden,false);
+ f.element('settingPoolFallback').value='none';
+ f.run('syncFallbackWarning()');
+ assert.equal(f.element('poolFallbackWarning').hidden,true);
+
+ const calls=[];
+ f.context.showToast=()=>{}; f.context.refresh=()=>{};
+ f.context.fetch=async(path,options)=>{calls.push({path,method:options&&options.method});return new Response('{}',{headers:{'Content-Type':'application/json'}});};
+ await f.run("deleteNodeFromDashboard('node-1')");
+ assert.ok(calls.some(c=>c.path==='/api/nodes/config/node-1'&&c.method==='DELETE'),'delete must call DELETE without confirmation');
+
+ f.run("window._debugNodes=[{name:'n1',tag:'t1',success_count:1,failure_count:0,timeline:[]}]; renderDebugNodes()");
+ const body=f.element('debugNodesTableBody').innerHTML;
+ assert.ok(body.includes('debugDetail0'),'diagnostics detail row missing');
+ assert.ok(body.includes('未严格验证'),'unverified hint missing');
 });

@@ -569,6 +569,10 @@
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>
         监控看板
       </button>
+      <button type="button" class="nav-item" onclick="switchTab('accounts')" aria-controls="accountsTab">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="9" cy="8" r="4"/><path d="M2 21v-2a6 6 0 0 1 12 0v2M17 11l2 2 3-4"/></svg>
+        用户与分池
+      </button>
       <button type="button" class="nav-item" onclick="switchTab('sessions')" aria-controls="sessionsTab">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><use href="#i-link"/></svg>
         会话路由
@@ -676,6 +680,61 @@
           </div>
         </div>
 
+        <div class="filter-toolbar" style="margin-top:16px">
+          <span class="panel-title">零感知切换指标</span>
+          <label class="form-help" for="metricWindowSelect">统计窗口</label>
+          <select id="metricWindowSelect" class="setting-input" style="width:120px;min-height:32px" onchange="changeMetricWindow()">
+            <option value="1m">1 分钟</option><option value="5m">5 分钟</option><option value="1h">1 小时</option>
+          </select>
+          <span class="form-help">实时推送 <span id="metricStreamStatus">未连接</span></span>
+        </div>
+        <div class="overview-grid" aria-label="零感知切换指标">
+          <div class="stat-panel">
+            <div class="stat-title">改道数</div>
+            <div class="stat-value" id="metricReroutes">0</div>
+            <div class="stat-sub"><span id="metricWindow">1m</span> · 改道率 <span id="metricRerouteRate">0%</span></div>
+          </div>
+          <div class="stat-panel">
+            <div class="stat-title">平均切换耗时</div>
+            <div class="stat-value" style="color: var(--primary);" id="metricRerouteAvg">0 ms</div>
+            <div class="stat-sub">失败改道不计入耗时</div>
+          </div>
+          <div class="stat-panel">
+            <div class="stat-title">P95 切换耗时</div>
+            <div class="stat-value" style="color: #f59e0b;" id="metricRerouteP95">0 ms</div>
+            <div class="stat-sub">P99 <span id="metricRerouteP99">0 ms</span></div>
+          </div>
+          <div class="stat-panel">
+            <div class="stat-title">业务侧感知失败率</div>
+            <div class="stat-value" style="color: var(--error);" id="metricVisibleFailure">0%</div>
+            <div class="stat-sub">零感知核心验收指标</div>
+          </div>
+          <div class="stat-panel">
+            <div class="stat-title">熔断 / 摘除 / 恢复</div>
+            <div class="stat-value" style="font-size: 22px;" id="metricCircuit">0 / 0 / 0</div>
+            <div class="stat-sub">状态迁移 / 节点摘除 / 恢复</div>
+          </div>
+          <div class="stat-panel">
+            <div class="stat-title">重载断连 / 降级</div>
+            <div class="stat-value" style="font-size: 22px;" id="metricReload">0 / 0</div>
+            <div class="stat-sub">强制中断连接数 / 降级次数</div>
+          </div>
+        </div>
+        <div class="panel" style="margin-bottom:16px">
+          <div class="panel-header"><div class="panel-title">改道与熔断事件流</div><span class="form-help">最近 30 条 · 实时推送</span></div>
+          <div id="metricEvents" class="form-help" style="max-height:180px;overflow:auto;padding:16px 20px;line-height:1.8"></div>
+        </div>
+        <div class="charts-grid" style="margin-top:12px">
+          <div class="chart-panel">
+            <div class="chart-title">改道趋势 (REROUTES)</div>
+            <div class="chart-container" id="metricRerouteChart" role="img" aria-label="改道数与平均切换耗时随时间变化"></div>
+          </div>
+          <div class="chart-panel">
+            <div class="chart-title">节点切换耗时分布 (DURATION)</div>
+            <div class="chart-container" id="metricDurationChart" role="img" aria-label="按节点统计的平均切换耗时"></div>
+          </div>
+        </div>
+
         <div class="charts-grid">
           <div class="chart-panel">
             <div class="chart-title">地域连通率 (REGIONS)</div>
@@ -726,6 +785,8 @@
                   <th scope="col">延迟 / 质量</th>
                   <th scope="col">连接</th>
                   <th scope="col">失败</th>
+                  <th scope="col">成功率</th>
+                  <th scope="col">零感知指标</th>
                   <th scope="col">操作</th>
                 </tr>
               </thead>
@@ -765,6 +826,62 @@
         </div>
       </div>
 
+      <!-- Accounts Tab -->
+      <section id="accountsTab" class="tab-content" aria-labelledby="accountsPageHeading">
+        <div class="page-heading"><div><div class="eyebrow">ACCOUNTS & POOLS</div><h1 id="accountsPageHeading">独立账号与分池。</h1><p>每个用户独立凭据，一用户单池；变更即时生效，无需重载，不影响在途连接。</p></div><button type="button" class="btn" onclick="loadAccounts()"><svg fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><use href="#i-refresh"/></svg> 刷新</button></div>
+
+        <div class="panel" style="margin-bottom:16px">
+          <div class="panel-header">
+            <div><div class="panel-title">分池定义</div><p class="form-help" style="margin-top:5px">点击「编辑」可改节点子集、回落与启停，无需删除重建；变更即时生效。</p></div>
+            <span class="form-help">一用户单池</span>
+          </div>
+          <div style="padding:16px 20px">
+            <div class="form-grid" style="grid-template-columns:repeat(3,minmax(0,1fr));margin-bottom:16px">
+              <div class="form-group"><label for="accountPoolName">分池名</label><input type="text" id="accountPoolName" class="setting-input" placeholder="字母 / 数字 / _ -" /></div>
+              <div class="form-group"><label for="accountPoolNodes">节点子集</label><input type="text" id="accountPoolNodes" class="setting-input" placeholder="节点 tag，逗号分隔；留空 = 全部节点" /></div>
+              <div class="form-group"><label for="accountPoolFallback">池内全不可用兜底</label><select id="accountPoolFallback" class="setting-input"><option value="none">不回落</option><option value="default_pool">回落默认池</option><option value="direct">直连</option></select></div>
+              <div class="form-group"><label for="accountPoolNote">备注</label><input type="text" id="accountPoolNote" class="setting-input" placeholder="可空" /></div>
+              <div class="checkbox-row"><input type="checkbox" id="accountPoolEnabled" checked /><label for="accountPoolEnabled">启用该分池</label></div>
+              <div class="form-group"><label>&nbsp;</label><div style="display:flex;gap:8px;flex-wrap:wrap"><button type="button" class="btn btn-sm btn-primary" id="accountPoolSubmit" onclick="submitAccountPool()">新建分池</button><button type="button" class="btn btn-sm" id="accountPoolCancel" onclick="resetAccountPoolForm()" style="display:none">取消编辑</button></div></div>
+            </div>
+            <div class="table-container">
+              <table><thead><tr><th scope="col">名称</th><th scope="col">节点子集</th><th scope="col">回落</th><th scope="col">状态</th><th scope="col">备注</th><th scope="col">操作</th></tr></thead><tbody id="accountPoolsBody"></tbody></table>
+            </div>
+            <div id="accountPoolsEmpty" class="empty-message" hidden>暂无分池，所有用户使用默认池（全部节点）。</div>
+          </div>
+        </div>
+
+        <div class="panel" style="margin-bottom:16px">
+          <div class="panel-header">
+            <div><div class="panel-title">用户定义</div><p class="form-help" style="margin-top:5px">编辑时密码留空表示不轮换凭据；删除用户不影响在途连接。</p></div>
+            <span class="form-help">独立凭据 · bcrypt 哈希</span>
+          </div>
+          <div style="padding:16px 20px">
+            <div class="form-grid" style="grid-template-columns:repeat(3,minmax(0,1fr));margin-bottom:16px">
+              <div class="form-group"><label for="accountUsername">用户名</label><input type="text" id="accountUsername" class="setting-input" placeholder="登录用户名" /></div>
+              <div class="form-group"><label for="accountPassword">密码</label><input type="password" id="accountPassword" class="setting-input" placeholder="编辑时留空表示不修改" /></div>
+              <div class="form-group"><label for="accountDisplayName">显示名</label><input type="text" id="accountDisplayName" class="setting-input" placeholder="可空" /></div>
+              <div class="form-group"><label for="accountUserPool">所属分池</label><select id="accountUserPool" class="setting-input"><option value="">默认池（全部节点）</option></select></div>
+              <div class="form-group"><label for="accountExpires">到期时间</label><input type="text" id="accountExpires" class="setting-input" placeholder="RFC3339，留空 = 永不过期" /></div>
+              <div class="form-group"><label for="accountUserNote">备注</label><input type="text" id="accountUserNote" class="setting-input" placeholder="可空" /></div>
+              <div class="form-group"><label for="accountMaxSessions">会话上限</label><input type="number" id="accountMaxSessions" class="setting-input" min="0" placeholder="0 = 不限" /></div>
+              <div class="form-group"><label for="accountMaxConns">并发上限</label><input type="number" id="accountMaxConns" class="setting-input" min="0" placeholder="0 = 不限" /></div>
+              <div class="checkbox-row"><input type="checkbox" id="accountUserEnabled" checked /><label for="accountUserEnabled">启用该用户</label></div>
+              <div class="form-group"><label>&nbsp;</label><div style="display:flex;gap:8px;flex-wrap:wrap"><button type="button" class="btn btn-sm btn-primary" id="accountUserSubmit" onclick="submitAccountUser()">新建用户</button><button type="button" class="btn btn-sm" id="accountUserCancel" onclick="resetAccountUserForm()" style="display:none">取消编辑</button></div></div>
+            </div>
+            <div class="table-container">
+              <table><thead><tr><th scope="col">用户名</th><th scope="col">显示名</th><th scope="col">分池</th><th scope="col">状态</th><th scope="col">到期</th><th scope="col">配额 / 备注</th><th scope="col">凭据版本</th><th scope="col">操作</th></tr></thead><tbody id="accountUsersBody"></tbody></table>
+            </div>
+            <div id="accountUsersEmpty" class="empty-message" hidden>暂无用户，全局监听凭据仍兼容可用。</div>
+          </div>
+        </div>
+
+        <div class="panel" style="margin-bottom:16px">
+          <div class="panel-header"><div class="panel-title">变更审计</div><span class="form-help">不含任何凭据</span></div>
+          <div id="accountAudit" class="form-help" style="max-height:180px;overflow:auto;padding:16px 20px;line-height:1.8"></div>
+        </div>
+      </section>
+
       <!-- Session Routing Tab -->
       <section id="sessionsTab" class="tab-content" aria-labelledby="sessionPageHeading">
         <div class="page-heading"><div><div class="eyebrow">SESSION ROUTING</div><h1 id="sessionPageHeading">稳定出口，按会话掌控。</h1><p>主端口支持普通调度与命名会话。不同会话 ID 独立选择上游，同一个 ID 保持绑定。</p></div><button type="button" class="btn" onclick="loadProxySessions()"><svg fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><use href="#i-refresh"/></svg> 刷新绑定</button></div>
@@ -796,19 +913,10 @@
             <div id="extAccessEmpty" class="empty-message" hidden>暂无扩展节点端口。请确认运行模式为 multi-port / hybrid，并完成来源抓取与验证。</div>
           </div>
         </div>
-        <!-- 用户分池：按基础用户名划分节点子集，未匹配用户走默认池（全部） -->
-        <div class="panel" style="margin-top: 16px;">
-          <div class="panel-header">
-            <div><div class="panel-title">用户分池</div><p class="form-help" style="margin-top:5px">按基础用户名划分节点子集；未匹配的用户使用默认池（全部节点）。池内节点不可用时不回落到池外。</p></div>
-            <button type="button" class="btn btn-sm btn-primary" onclick="openUserPoolEditor()">新增池</button>
-          </div>
-          <div class="table-container">
-            <table>
-              <thead><tr><th scope="col">池名</th><th scope="col">绑定用户名</th><th scope="col">节点数</th><th scope="col">操作</th></tr></thead>
-              <tbody id="userPoolsBody"></tbody>
-            </table>
-          </div>
-          <div id="userPoolsEmpty" class="empty-message" hidden>暂无分池规则，所有用户使用默认池（全部节点）。</div>
+        <!-- 用户分池已统一到「用户与分池」页，避免双入口写入分叉 -->
+        <div class="notice" style="margin-top:16px">
+          <div><strong>用户与分池已迁移</strong><br/>账号凭据、分池定义与节点子集统一在「用户与分池」页维护，变更即时生效。旧版按用户名绑定的分池写入路径已停用。</div>
+          <button type="button" class="btn btn-sm btn-primary" onclick="switchTab('accounts')">前往用户与分池</button>
         </div>
 
         <div class="panel"><div class="panel-header"><div><div class="panel-title">会话绑定</div><p class="form-help" style="margin-top:5px">绑定按节点身份跨订阅刷新 / 核心重载保留；进程重启清空。</p></div><button type="button" class="btn btn-danger" id="clearSessionsBtn" onclick="resetProxySessions()" disabled>重置全部绑定</button></div>
@@ -826,6 +934,7 @@
           </div>
           <div style="display:flex; gap: 10px;">
             <button class="btn btn-primary" onclick="showAddNodeModal()"><svg fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><use href="#i-plus"/></svg> 添加节点</button>
+            <button class="btn" onclick="showNodeImportModal()">批量导入</button>
             <button class="btn btn-warning" onclick="triggerReload()" id="reloadBtn" >重载核心</button>
           </div>
         </div>
@@ -882,7 +991,7 @@
 
         <div class="filter-toolbar"><label class="search-field"><span class="sr-only">搜索诊断节点</span><input type="search" id="debugNodeSearch" class="setting-input" placeholder="搜索节点名称或标签" oninput="renderDebugNodes(true)" /></label><span class="filter-count" id="debugFilterCount"></span></div>
         <div class="panel">
-          <div class="panel-header"><div class="panel-title">节点质量分析</div></div>
+          <div class="panel-header"><div class="panel-title">节点质量分析</div><button type="button" class="btn btn-sm" onclick="verifyAllNodeQuality()">验证全部</button></div>
           <div class="table-container">
             <table>
               <thead>
@@ -905,14 +1014,34 @@
       <div id="logsTab" class="tab-content">
         <div class="panel">
           <div class="panel-header">
-            <div class="panel-title">控制台日志 (Console Logs) <span id="logStatus" role="status" class="form-help"></span> <span class="form-help">· 来源抓取与验证日志同样汇入此处</span></div>
-            <div style="display:flex; align-items:center; gap:12px;">
-              <label style="font-size:13px; color:var(--text-muted); display:flex; align-items:center; gap:6px;"><input type="checkbox" id="autoScrollLogs" checked> 自动滚动</label>
-              <button class="btn btn-sm" onclick="pollLogs()"><svg fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><use href="#i-refresh"/></svg> 刷新</button>
+            <div><div class="panel-title">控制台日志 (Console Logs) <span id="logStatus" role="status" class="form-help"></span></div><p class="form-help" style="margin-top:5px">按级别、类别与关键字检索；结构化日志与原始控制台文本共用同一份后端缓冲。</p></div>
+            <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap">
+              <label class="form-help" for="logViewSelect">视图</label>
+              <select id="logViewSelect" class="setting-input" style="width:130px;min-height:32px" onchange="switchLogView()">
+                <option value="entries">结构化日志</option><option value="raw">原始控制台</option>
+              </select>
+              <label class="form-help" for="autoScrollLogs" style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="autoScrollLogs" checked> 自动滚动</label>
+              <button class="btn btn-sm" onclick="pollLogs(); pollLogEntries()">刷新</button>
             </div>
           </div>
-          <div style="padding: 0;">
-            <textarea id="consoleLogs" readonly style="width:100%; height:calc(100vh - 220px); min-height:400px; background:var(--bg-input); color:var(--text-main); font-family:'JetBrains Mono',monospace; font-size:12px; line-height:1.7; border:none; border-top:1px solid var(--border); padding:16px; resize:none; box-sizing:border-box; white-space:pre; overflow-x:auto;"></textarea>
+          <div class="filter-toolbar" style="padding:16px 20px 0">
+            <label class="form-help" for="logLevelFilter">级别</label>
+            <select id="logLevelFilter" class="setting-input" style="width:110px;min-height:32px" onchange="pollLogEntries()">
+              <option value="all">全部</option><option value="DEBUG">DEBUG</option><option value="INFO" selected>INFO</option><option value="WARN">WARN</option><option value="ERROR">ERROR</option>
+            </select>
+            <label class="form-help" for="logCategoryFilter">类别</label>
+            <select id="logCategoryFilter" class="setting-input" style="width:130px;min-height:32px" onchange="pollLogEntries()">
+              <option value="all">全部</option><option value="refresh">refresh</option><option value="verify">verify</option><option value="access">access</option><option value="reroute">reroute</option><option value="circuit">circuit</option>
+            </select>
+            <label class="search-field"><span class="sr-only">搜索日志</span><input type="search" id="logSearch" class="setting-input" placeholder="搜索消息、来源、节点或域名" oninput="scheduleLogEntriesPoll()" /></label>
+            <span class="filter-count" id="logEntryCount">0 条</span>
+          </div>
+          <div id="logEntriesView" class="table-container" style="padding:0 20px 16px">
+            <table><thead><tr><th scope="col">时间</th><th scope="col">级别</th><th scope="col">类别</th><th scope="col">来源</th><th scope="col">消息</th></tr></thead><tbody id="logEntriesBody"></tbody></table>
+            <div id="logEntriesEmpty" class="empty-message" hidden>暂无匹配日志。</div>
+          </div>
+          <div id="logRawView" style="display:none">
+            <textarea id="consoleLogs" readonly style="width:100%; height:calc(100vh - 300px); min-height:360px; background:var(--bg-input); color:var(--text-main); font-family:var(--font-mono); font-size:12px; line-height:1.7; border:none; border-top:1px solid var(--border); padding:16px; resize:none; box-sizing:border-box; white-space:pre; overflow-x:auto;"></textarea>
           </div>
         </div>
       </div>
@@ -928,12 +1057,9 @@
               <div class="panel-header"><div class="panel-title">基础配置</div></div>
               <div style="padding: 16px; display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
                 <div class="form-group">
-                  <label for="settingMode">运行模式 (Mode)</label>
-                  <select id="settingMode" class="setting-input">
-                    <option value="pool">pool - 单端口负载池</option>
-                    <option value="multi-port">multi-port - 多端口模式</option>
-                    <option value="hybrid">hybrid - 混合模式</option>
-                  </select>
+                  <label for="settingModeReadonly">运行模式</label>
+                  <input type="text" id="settingModeReadonly" class="setting-input" value="固定双栈（共享入口 + 每节点端口）" readonly />
+                  <span class="form-help">Topology 已固定，不再通过配置切换。</span>
                 </div>
                 <div class="form-group">
                   <label for="settingExternalIP">外部 IP (External IP)</label>
@@ -988,7 +1114,14 @@
                 <div class="form-group"><label for="settingPoolRateLimit">429 限流冷却</label><input type="text" id="settingPoolRateLimit" class="setting-input" placeholder="60s" /></div>
                 <div class="checkbox-row"><input type="checkbox" id="settingPoolBlacklistPin" /><label for="settingPoolBlacklistPin">绑定节点拨号失败时立即拉黑（命名会话）</label></div>
               </div>
-              <div style="font-size: 11px; color: var(--text-muted); padding: 0 16px 12px;">永久性故障（握手/证书/协议失败等）连续达到「故障阈值」后按「黑名单时长」拉黑。暂时性故障（超时、连接重置、503）和 429 限流不计入该阈值，只按对应冷却时间临时跳过该节点，到期自动恢复。支持 30s / 10m / 2h 等格式；想让 429 直接拉黑数小时，把「429 限流冷却」改成 2h 即可。开启「绑定节点拨号失败时立即拉黑」后，命名会话绑定的节点一旦拨号失败就立刻按「黑名单时长」拉黑，不必等故障阈值累计（429/超时类仍只冷却）。</div>
+              <div class="form-grid" style="grid-template-columns:repeat(3,minmax(0,1fr));padding:16px;border-top:1px solid var(--border)">
+                <div class="form-group"><label for="settingPoolSwitchBudget">切换总预算</label><input type="text" id="settingPoolSwitchBudget" class="setting-input" placeholder="3s" /><span class="form-help">一次请求内所有改道的时限</span></div>
+                <div class="form-group"><label for="settingPoolDialTimeout">单次拨号超时</label><input type="text" id="settingPoolDialTimeout" class="setting-input" placeholder="留空 / 0s = 不启用" /></div>
+                <div class="form-group"><label for="settingPoolHealthInterval">健康探测周期</label><input type="text" id="settingPoolHealthInterval" class="setting-input" placeholder="5m" /></div>
+                <div class="form-group"><label for="settingPoolFallback">全不可用兜底</label><select id="settingPoolFallback" class="setting-input" onchange="syncFallbackWarning()"><option value="none">不回落</option><option value="default_pool">回落默认池</option><option value="direct">直连</option></select><span id="poolFallbackWarning" class="form-help" style="color:var(--error)" hidden>直连会绕过代理并使用真实出口 IP，仅在无可用节点时作为兜底。</span></div>
+                <div class="checkbox-row"><input type="checkbox" id="settingPoolCircuitEnabled" checked /><label for="settingPoolCircuitEnabled">启用节点三态熔断（Closed / Open / HalfOpen）</label></div>
+              </div>
+              <div style="font-size: 11px; color: var(--text-muted); padding: 0 16px 12px;">零感知设置：切换总预算内完成所有改道，超时才向调用方返回失败；熔断开启后连续失败达到「故障阈值」的节点会被跳过并进入半开探测。探测周期越短发现故障越快，但对节点压力越大。以上设置保存后需重载核心生效。永久性故障（握手/证书/协议失败等）连续达到「故障阈值」后按「黑名单时长」拉黑。暂时性故障（超时、连接重置、503）和 429 限流不计入该阈值，只按对应冷却时间临时跳过该节点，到期自动恢复。支持 30s / 10m / 2h 等格式；想让 429 直接拉黑数小时，把「429 限流冷却」改成 2h 即可。开启「绑定节点拨号失败时立即拉黑」后，命名会话绑定的节点一旦拨号失败就立刻按「黑名单时长」拉黑，不必等故障阈值累计（429/超时类仍只冷却）。</div>
             </div>
 
             <div class="panel" style="margin-bottom: 16px;">
@@ -1155,15 +1288,73 @@
       <div class="modal-header" id="nodeModalTitle">节点配置</div>
       <form onsubmit="handleNodeSubmit(event)">
         <div class="modal-body">
-          <div class="form-group">
-            <label for="nodeName">节点名称 Name</label>
-            <input type="text" id="nodeName" placeholder="HK-01" />
+          <div class="form-grid">
+            <div class="form-group">
+              <label for="nodeName">节点名称 Name</label>
+              <input type="text" id="nodeName" placeholder="HK-01" />
+            </div>
+            <div class="form-group">
+              <label for="nodeInputMode">输入方式</label>
+              <select id="nodeInputMode" class="setting-input" onchange="syncNodeInputMode()">
+                <option value="uri">URI / 链接</option>
+                <option value="form">表单（按协议）</option>
+              </select>
+            </div>
           </div>
-          <div class="form-group">
+
+          <div class="form-group" id="nodeUriGroup" style="margin-top:12px">
             <label for="nodeUri">节点 URI</label>
-            <input type="text" id="nodeUri" required placeholder="vless://... 或 anytls://..." />
+            <input type="text" id="nodeUri" placeholder="vless://... 或 anytls://..." />
           </div>
-          <div class="form-group">
+
+          <div id="nodeFormGroup" hidden style="margin-top:12px">
+            <div class="form-grid">
+              <div class="form-group">
+                <label for="nodeProto">协议 <span style="color:var(--error)">*</span></label>
+                <select id="nodeProto" class="setting-input" onchange="syncNodeFormFields()">
+                  <option value="socks5">SOCKS5</option>
+                  <option value="http">HTTP</option>
+                  <option value="ss">Shadowsocks</option>
+                  <option value="vless">VLESS</option>
+                  <option value="trojan">Trojan</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label for="nodeServer">服务器 <span style="color:var(--error)">*</span></label>
+                <input type="text" id="nodeServer" class="setting-input" placeholder="example.com 或 1.2.3.4" />
+              </div>
+              <div class="form-group">
+                <label for="nodeFormPort">端口 <span style="color:var(--error)">*</span></label>
+                <input type="number" id="nodeFormPort" class="setting-input" min="1" max="65535" placeholder="443" />
+              </div>
+            </div>
+
+            <div id="nodeGroupAuth" class="form-grid" style="margin-top:12px">
+              <div class="form-group"><label for="nodeUserForm">用户名</label><input type="text" id="nodeUserForm" class="setting-input" /></div>
+              <div class="form-group"><label for="nodePassForm">密码</label><input type="password" id="nodePassForm" class="setting-input" /></div>
+            </div>
+
+            <div id="nodeGroupSs" class="form-grid" hidden style="margin-top:12px">
+              <div class="form-group"><label for="nodeSsMethod">加密方式 <span style="color:var(--error)">*</span></label><input type="text" id="nodeSsMethod" class="setting-input" value="aes-128-gcm" /></div>
+              <div class="form-group"><label for="nodeSsPass">密码 <span style="color:var(--error)">*</span></label><input type="password" id="nodeSsPass" class="setting-input" /></div>
+            </div>
+
+            <div id="nodeGroupVless" class="form-grid" hidden style="margin-top:12px">
+              <div class="form-group"><label for="nodeVlessUuid">UUID <span style="color:var(--error)">*</span></label><input type="text" id="nodeVlessUuid" class="setting-input" /></div>
+              <div class="form-group"><label for="nodeVlessSecurity">传输安全</label><select id="nodeVlessSecurity" class="setting-input"><option value="none">none</option><option value="tls">tls</option><option value="reality">reality</option></select></div>
+              <div class="form-group"><label for="nodeVlessSni">SNI</label><input type="text" id="nodeVlessSni" class="setting-input" /></div>
+              <div class="form-group"><label for="nodeVlessNetwork">传输层</label><select id="nodeVlessNetwork" class="setting-input"><option value="tcp">tcp</option><option value="ws">ws</option><option value="grpc">grpc</option></select></div>
+              <div class="form-group"><label for="nodeVlessPath">路径 / serviceName</label><input type="text" id="nodeVlessPath" class="setting-input" /></div>
+            </div>
+
+            <div id="nodeGroupTrojan" class="form-grid" hidden style="margin-top:12px">
+              <div class="form-group"><label for="nodeTrojanPass">密码 <span style="color:var(--error)">*</span></label><input type="password" id="nodeTrojanPass" class="setting-input" /></div>
+              <div class="form-group"><label for="nodeTrojanSni">SNI</label><input type="text" id="nodeTrojanSni" class="setting-input" /></div>
+            </div>
+            <div class="form-help" style="margin-top:10px">高级协议（vmess / hysteria2 / tuic / anytls / ssr）请使用「批量导入」粘贴 Clash YAML。</div>
+          </div>
+
+          <div class="form-group" id="nodePortGroup" style="margin-top:12px">
             <label for="nodePort">映射端口 (可选)</label>
             <input type="number" id="nodePort" placeholder="0" />
           </div>
@@ -1179,6 +1370,31 @@
 
 
 
+  <!-- Batch node import: Clash YAML or URL list, preview then confirm -->
+  <div class="modal-overlay" id="nodeImportOverlay">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="nodeImportTitle" style="max-width: 900px;">
+      <div class="modal-header" id="nodeImportTitle">批量导入节点</div>
+      <div class="modal-body">
+        <div class="form-grid">
+          <div class="form-group"><label for="nodeImportMode">来源格式</label><select id="nodeImportMode" class="setting-input"><option value="clash">Clash YAML（仅读取 proxies:）</option><option value="urls">URL 列表（每行一条）</option></select></div>
+          <div class="form-group"><label>&nbsp;</label><div><button type="button" class="btn btn-sm btn-primary" onclick="previewNodeImport()">解析预览</button></div></div>
+        </div>
+        <div class="form-group" style="margin-top:12px">
+          <label for="nodeImportText">粘贴内容</label>
+          <textarea id="nodeImportText" class="setting-input" rows="8" style="resize:vertical;font-family:var(--font-mono);font-size:12px" placeholder="proxies:&#10;  - name: hk-01&#10;    type: ss&#10;    server: 1.2.3.4&#10;    port: 8388&#10;    cipher: aes-128-gcm&#10;    password: pass"></textarea>
+        </div>
+        <div class="form-help" id="nodeImportStatus"></div>
+        <div class="table-container" style="margin-top:12px;max-height:280px;overflow:auto">
+          <table><thead><tr><th scope="col">名称</th><th scope="col">URI</th><th scope="col">状态</th></tr></thead><tbody id="nodeImportPreview"></tbody></table>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn" onclick="closeModal('nodeImportOverlay')">取消</button>
+        <button type="button" class="btn btn-primary" onclick="confirmNodeImport()">确认添加</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Node detail: reuses the upstream modal theme, no drawer CSS needed -->
   <div class="modal-overlay" id="extNodeModalOverlay">
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="extNodeModalTitle" style="max-width: 760px;">
@@ -1188,33 +1404,6 @@
         <div class="form-help" style="margin-top: 12px;" id="extNodeDetailHint"></div>
       </div>
       <div class="modal-footer"><button type="button" class="btn" onclick="closeModal('extNodeModalOverlay')">关闭</button></div>
-    </div>
-  </div>
-
-  <!-- 用户分池编辑器 -->
-  <div class="modal-overlay" id="userPoolModalOverlay">
-    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="userPoolModalTitle" style="max-width: 760px;">
-      <div class="modal-header" id="userPoolModalTitle">用户分池</div>
-      <div class="modal-body">
-        <div class="form-grid">
-          <div class="form-group"><label for="userPoolName">池名</label><input type="text" id="userPoolName" class="setting-input" placeholder="例如 team-a" /></div>
-          <div class="form-group"><label for="userPoolCount">已选节点</label><input type="text" id="userPoolCount" class="setting-input" readonly /></div>
-        </div>
-        <div class="form-group" style="margin-top:12px;">
-          <label for="userPoolUsers">绑定用户名（每行一个，不含 .会话ID）</label>
-          <textarea id="userPoolUsers" rows="3" class="setting-input" placeholder="alice&#10;bob" style="resize:vertical;font-size:12px;"></textarea>
-        </div>
-        <div class="form-group" style="margin-top:12px;">
-          <label for="userPoolNodeSearch">池内节点（不勾选表示使用全部节点）</label>
-          <input type="search" id="userPoolNodeSearch" class="setting-input" placeholder="搜索节点名称或标签" oninput="renderUserPoolNodePicker()" />
-          <div id="userPoolNodePicker" style="max-height:260px;overflow:auto;border:1px solid var(--border);border-radius:8px;margin-top:8px;padding:8px;"></div>
-        </div>
-        <div class="form-help" style="margin-top:8px;">池内节点被删除或全部不可用时，该池用户不会被分配到池外节点。</div>
-      </div>
-      <div class="modal-footer">
-        <button type="button" class="btn" onclick="closeModal('userPoolModalOverlay')">取消</button>
-        <button type="button" class="btn btn-primary" onclick="saveUserPool()">保存</button>
-      </div>
     </div>
   </div>
 
@@ -1405,7 +1594,7 @@
       if (e.key === 'Escape') {
         if (document.getElementById('nodeModalOverlay').classList.contains('show')) closeModal('nodeModalOverlay');
         if (document.getElementById('extNodeModalOverlay').classList.contains('show')) closeModal('extNodeModalOverlay');
-        if (document.getElementById('userPoolModalOverlay').classList.contains('show')) closeModal('userPoolModalOverlay');
+        if (document.getElementById('nodeImportOverlay').classList.contains('show')) closeModal('nodeImportOverlay');
         if (document.body.classList.contains('nav-open')) { toggleSidebar(false); document.getElementById('mobileMenuBtn').focus(); }
       }
       if (e.key !== 'Tab') return;
@@ -1448,7 +1637,7 @@
       } catch (ex) { error.textContent=ex.message; error.style.display='block'; }
       finally { button.disabled=false; }
     }
-    const PAGE_TITLES={dashboard:'监控看板',sessions:'会话路由',manage:'节点配置',debug:'诊断分析',logs:'控制台日志',settings:'系统设置'};
+    const PAGE_TITLES={dashboard:'监控看板',accounts:'用户与分池',sessions:'会话路由',manage:'节点配置',debug:'诊断分析',logs:'控制台日志',settings:'系统设置'};
     function switchTab(name) {
       if (!PAGE_TITLES[name]) return;
       document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
@@ -1460,7 +1649,8 @@
       toggleSidebar(false); document.getElementById('mainContent').focus({preventScroll:true});
       if (name !== 'sessions') clearGeneratedLink();
       if (name === 'dashboard') setTimeout(updateDashboardCharts,100);
-      if (name === 'sessions') { loadProxySessions(); loadExtAccess(); loadUserPools(); }
+      if (name === 'accounts') loadAccounts();
+      if (name === 'sessions') { loadProxySessions(); loadExtAccess(); }
       if (name === 'manage') loadConfigNodes();
       if (name === 'debug') { loadDebugData(); loadExtStatus(); }
       if (name === 'dashboard') loadExtStatus();
@@ -1571,6 +1761,357 @@
       }
     }
 
+    let accountsCache = {users:[], pools:[]};
+    let editingPool = null, editingUser = null;
+    async function accountRequest(method, path, body) {
+      const options = {method};
+      if (body !== undefined) {
+        options.headers = {'Content-Type':'application/json'};
+        options.body = JSON.stringify(body);
+      }
+      const res = await apiFetch(path, options);
+      let payload = {};
+      try { payload = await res.json(); } catch (_) {}
+      if (!res.ok) throw new Error(payload.error || '操作失败');
+      return payload;
+    }
+    function accountCell(row, text) {
+      const td = document.createElement('td');
+      td.textContent = text == null || text === '' ? '-' : String(text);
+      row.appendChild(td);
+      return td;
+    }
+    function accountActions(row, actions) {
+      const td = document.createElement('td');
+      for (const action of actions) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = action.danger ? 'btn btn-sm btn-danger' : 'btn btn-sm';
+        btn.textContent = action.label;
+        btn.style.marginRight = '4px';
+        btn.onclick = action.handler;
+        td.appendChild(btn);
+      }
+      row.appendChild(td);
+    }
+    async function loadAccounts() {
+      if (!authReady || document.hidden) return;
+      try {
+        const data = await requestJSON('/api/accounts');
+        accountsCache = {users: data.users || [], pools: data.pools || []};
+        const select = document.getElementById('accountUserPool');
+        if (select) {
+          const previous = select.value;
+          select.replaceChildren();
+          const defaultOption = document.createElement('option');
+          defaultOption.value = ''; defaultOption.textContent = '默认池（全部节点）';
+          select.appendChild(defaultOption);
+          for (const pool of accountsCache.pools) {
+            const option = document.createElement('option');
+            option.value = pool.name; option.textContent = pool.name;
+            select.appendChild(option);
+          }
+          select.value = Array.from(select.options).some(o => o.value === previous) ? previous : '';
+        }
+        const poolsEmpty = document.getElementById('accountPoolsEmpty');
+        if (poolsEmpty) poolsEmpty.hidden = accountsCache.pools.length > 0;
+        const usersEmpty = document.getElementById('accountUsersEmpty');
+        if (usersEmpty) usersEmpty.hidden = accountsCache.users.length > 0;
+        const poolBody = document.getElementById('accountPoolsBody');
+        if (poolBody) {
+          poolBody.replaceChildren();
+          for (const pool of accountsCache.pools) {
+            const row = document.createElement('tr');
+            accountCell(row, pool.name);
+            accountCell(row, (pool.nodes || []).join(', '));
+            accountCell(row, pool.fallback || 'none');
+            accountCell(row, pool.enabled ? '启用' : '停用');
+            accountCell(row, pool.note);
+            accountActions(row, [
+              {label: '编辑', handler: () => editAccountPool(pool)},
+              {label: '删除', danger: true, handler: () => deleteAccountPool(pool.name)}
+            ]);
+            poolBody.appendChild(row);
+          }
+        }
+        const userBody = document.getElementById('accountUsersBody');
+        if (userBody) {
+          userBody.replaceChildren();
+          for (const user of accountsCache.users) {
+            const row = document.createElement('tr');
+            accountCell(row, user.username);
+            accountCell(row, user.display_name);
+            accountCell(row, user.pool);
+            accountCell(row, user.enabled ? '启用' : '停用');
+            accountCell(row, user.expires_at);
+            const quota = [user.max_sessions ? '会话≤' + user.max_sessions : '', user.max_conns ? '并发≤' + user.max_conns : '', user.note || ''].filter(Boolean).join(' · ');
+            accountCell(row, quota);
+            accountCell(row, user.credential_version);
+            accountActions(row, [
+              {label: '编辑', handler: () => editAccountUser(user)},
+              {label: user.enabled ? '停用' : '启用', handler: () => toggleAccountUser(user)},
+              {label: '改密', handler: () => rotateAccountPassword(user)},
+              {label: '删除', danger: true, handler: () => deleteAccountUser(user.username)}
+            ]);
+            userBody.appendChild(row);
+          }
+        }
+        const audit = document.getElementById('accountAudit');
+        if (audit) {
+          audit.replaceChildren();
+          const entries = (data.audit || []).slice(-40).reverse();
+          if (!entries.length) {
+            const empty = document.createElement('div');
+            empty.textContent = '暂无变更记录';
+            audit.appendChild(empty);
+          }
+          for (const record of entries) {
+            const line = document.createElement('div');
+            line.textContent = `${record.at} · ${record.action} · ${record.target}`;
+            audit.appendChild(line);
+          }
+        }
+      } catch (e) { showToast(e.message || '读取账号失败', 'error'); }
+    }
+    function setAccountMode(kind, editing) {
+      const prefix = kind === 'pool' ? 'accountPool' : 'accountUser';
+      document.getElementById(prefix + 'Submit').textContent = editing ? '保存修改' : (kind === 'pool' ? '新建分池' : '新建用户');
+      document.getElementById(prefix + 'Cancel').style.display = editing ? '' : 'none';
+      document.getElementById(kind === 'pool' ? 'accountPoolName' : 'accountUsername').disabled = editing;
+    }
+    function resetAccountPoolForm() {
+      editingPool = null;
+      for (const id of ['accountPoolName','accountPoolNodes','accountPoolNote']) document.getElementById(id).value = '';
+      document.getElementById('accountPoolFallback').value = 'none';
+      document.getElementById('accountPoolEnabled').checked = true;
+      setAccountMode('pool', false);
+    }
+    function editAccountPool(pool) {
+      editingPool = pool.name;
+      document.getElementById('accountPoolName').value = pool.name;
+      document.getElementById('accountPoolNodes').value = (pool.nodes || []).join(', ');
+      document.getElementById('accountPoolFallback').value = pool.fallback || 'none';
+      document.getElementById('accountPoolEnabled').checked = pool.enabled !== false;
+      document.getElementById('accountPoolNote').value = pool.note || '';
+      setAccountMode('pool', true);
+    }
+    function resetAccountUserForm() {
+      editingUser = null;
+      for (const id of ['accountUsername','accountPassword','accountDisplayName','accountExpires','accountMaxSessions','accountMaxConns','accountUserNote']) document.getElementById(id).value = '';
+      document.getElementById('accountUserPool').value = '';
+      document.getElementById('accountUserEnabled').checked = true;
+      setAccountMode('user', false);
+    }
+    function editAccountUser(user) {
+      editingUser = user.username;
+      document.getElementById('accountUsername').value = user.username;
+      document.getElementById('accountPassword').value = '';
+      document.getElementById('accountDisplayName').value = user.display_name || '';
+      document.getElementById('accountUserPool').value = user.pool || '';
+      document.getElementById('accountExpires').value = user.expires_at || '';
+      document.getElementById('accountMaxSessions').value = user.max_sessions || '';
+      document.getElementById('accountMaxConns').value = user.max_conns || '';
+      document.getElementById('accountUserNote').value = user.note || '';
+      document.getElementById('accountUserEnabled').checked = user.enabled !== false;
+      setAccountMode('user', true);
+    }
+    async function submitAccountPool() {
+      const name = document.getElementById('accountPoolName').value.trim();
+      const body = {
+        name,
+        nodes: document.getElementById('accountPoolNodes').value.split(',').map(s => s.trim()).filter(Boolean),
+        fallback: document.getElementById('accountPoolFallback').value,
+        enabled: document.getElementById('accountPoolEnabled').checked,
+        note: document.getElementById('accountPoolNote').value.trim()
+      };
+      const path = editingPool ? '/api/accounts/pools/' + encodeURIComponent(editingPool) : '/api/accounts/pools';
+      try {
+        await accountRequest(editingPool ? 'PUT' : 'POST', path, body);
+        showToast(editingPool ? '分池已更新并立即生效' : '分池已创建并立即生效');
+        resetAccountPoolForm();
+        await loadAccounts();
+      } catch (e) { showToast(e.message, 'error'); }
+    }
+    async function submitAccountUser() {
+      const body = {
+        username: document.getElementById('accountUsername').value.trim(),
+        password: document.getElementById('accountPassword').value,
+        display_name: document.getElementById('accountDisplayName').value.trim(),
+        pool: document.getElementById('accountUserPool').value,
+        expires_at: document.getElementById('accountExpires').value.trim(),
+        max_sessions: parseInt(document.getElementById('accountMaxSessions').value) || 0,
+        max_conns: parseInt(document.getElementById('accountMaxConns').value) || 0,
+        note: document.getElementById('accountUserNote').value.trim(),
+        enabled: document.getElementById('accountUserEnabled').checked
+      };
+      const path = editingUser ? '/api/accounts/users/' + encodeURIComponent(editingUser) : '/api/accounts/users';
+      try {
+        await accountRequest(editingUser ? 'PUT' : 'POST', path, body);
+        showToast(editingUser ? '用户已更新并立即生效' : '用户已创建并立即生效');
+        resetAccountUserForm();
+        await loadAccounts();
+      } catch (e) { showToast(e.message, 'error'); }
+    }
+    async function deleteAccountPool(name) {
+      if (!confirm(`确定删除分池 ${name}？池内仍有用户时会拒绝。`)) return;
+      try { await accountRequest('DELETE', '/api/accounts/pools/' + encodeURIComponent(name)); showToast('分池已删除'); await loadAccounts(); }
+      catch (e) { showToast(e.message, 'error'); }
+    }
+    async function deleteAccountUser(name) {
+      if (!confirm(`确定删除用户 ${name}？在途连接将保持到自然结束。`)) return;
+      try { await accountRequest('DELETE', '/api/accounts/users/' + encodeURIComponent(name)); showToast('用户已删除'); await loadAccounts(); }
+      catch (e) { showToast(e.message, 'error'); }
+    }
+    function accountUserBody(user, extra) {
+      return Object.assign({
+        display_name: user.display_name || '', pool: user.pool || '', expires_at: user.expires_at || '',
+        max_sessions: user.max_sessions || 0, max_conns: user.max_conns || 0, note: user.note || ''
+      }, extra);
+    }
+    async function toggleAccountUser(user) {
+      try {
+        await accountRequest('PUT', '/api/accounts/users/' + encodeURIComponent(user.username),
+          accountUserBody(user, {enabled: !user.enabled}));
+        showToast('状态已更新并立即生效');
+        await loadAccounts();
+      } catch (e) { showToast(e.message, 'error'); }
+    }
+    async function rotateAccountPassword(user) {
+      const password = prompt(`为 ${user.username} 设置新密码（留空取消）`);
+      if (!password) return;
+      try {
+        await accountRequest('PUT', '/api/accounts/users/' + encodeURIComponent(user.username),
+          accountUserBody(user, {password}));
+        showToast('凭据已轮换，旧密码立即失效');
+        await loadAccounts();
+      } catch (e) { showToast(e.message, 'error'); }
+    }
+
+    let metricsLoading = false;
+    let metricsByNode = {};
+    let metricsSource = null, metricsGeneration = 0, metricsRetryTimer = null, metricsRetryDelay = 1000;
+    function metricWindow() {
+      const select = document.getElementById('metricWindowSelect');
+      const value = select ? select.value : '1m';
+      return ['1m', '5m', '1h'].includes(value) ? value : '1m';
+    }
+    function changeMetricWindow() { loadMetrics(); }
+    async function loadMetrics() {
+      if (metricsLoading || document.hidden || !authReady) return;
+      metricsLoading = true;
+      try {
+        applyMetrics(await requestJSON('/api/metrics?window=' + metricWindow()));
+      } catch (_) { /* metrics must never break node refresh */ }
+      finally { metricsLoading = false; }
+    }
+    function applyMetrics(data) {
+      if (!data || document.hidden) return;
+      const s = data.summary || {};
+      const setText = (id, value) => { const el = document.getElementById(id); if (el) el.textContent = value; };
+      setText('metricReroutes', String(s.reroute_total ?? 0));
+      setText('metricWindow', metricWindow());
+      setText('metricRerouteRate', ((s.reroute_rate ?? 0) * 100).toFixed(2) + '%');
+      setText('metricRerouteAvg', Number(s.reroute_avg_ms ?? 0).toFixed(1) + ' ms');
+      setText('metricRerouteP95', Number(s.reroute_p95_ms ?? 0).toFixed(1) + ' ms');
+      setText('metricRerouteP99', Number(s.reroute_p99_ms ?? 0).toFixed(1) + ' ms');
+      setText('metricVisibleFailure', ((s.client_visible_failure_rate ?? 0) * 100).toFixed(3) + '%');
+      setText('metricCircuit', `${s.circuit_transitions ?? 0} / ${s.node_evictions ?? 0} / ${s.node_recoveries ?? 0}`);
+      setText('metricReload', `${s.reload_disconnected_conns ?? 0} / ${s.degrades ?? 0}`);
+      const box = document.getElementById('metricEvents');
+      if (box) {
+        const events = (data.events || []).slice(-30).reverse();
+        box.replaceChildren();
+        if (!events.length) {
+          const empty = document.createElement('div');
+          empty.textContent = '暂无改道事件';
+          box.appendChild(empty);
+        } else {
+          for (const ev of events) {
+            const row = document.createElement('div');
+            const when = ev.ts ? new Date(ev.ts).toLocaleTimeString('zh-CN', {hour12:false}) : '';
+            const route = (ev.from || ev.to) ? `${ev.from || '-'} → ${ev.to || '-'}` : (ev.detail || '');
+            const cost = ev.duration_ms ? ` ${Number(ev.duration_ms).toFixed(1)}ms` : '';
+            row.textContent = `${when} · ${ev.type} · ${route} · ${ev.reason || ''}${cost}`;
+            box.appendChild(row);
+          }
+        }
+      }
+      metricsByNode = {};
+      for (const item of (data.by_node || [])) {
+        if (item && item.tag) metricsByNode[item.tag] = item;
+      }
+      renderMetricCharts(data);
+    }
+    function renderMetricCharts(data) {
+      const points = data.series || [];
+      const trend = initEchart('metricRerouteChart');
+      if (trend) {
+        const labels = points.map(p => new Date(Number(p.ts) * 1000).toLocaleTimeString('zh-CN', {hour12:false}));
+        trend.setOption({
+          tooltip:{trigger:'axis'}, legend:{data:['改道数','平均耗时']},
+          grid:{left:48,right:48,top:36,bottom:28},
+          xAxis:{type:'category',data:labels,axisLabel:{fontSize:10}},
+          yAxis:[{type:'value',name:'次'},{type:'value',name:'ms'}],
+          series:[
+            {name:'改道数',type:'line',smooth:true,showSymbol:false,data:points.map(p => p.reroutes || 0)},
+            {name:'平均耗时',type:'line',smooth:true,showSymbol:false,yAxisIndex:1,data:points.map(p => Number(p.avg_ms || 0).toFixed(1))}
+          ]
+        }, true);
+      }
+      const duration = initEchart('metricDurationChart');
+      if (duration) {
+        const byNode = (data.by_node || []).slice().sort((a,b) => (b.avg_ms || 0) - (a.avg_ms || 0)).slice(0, 12);
+        duration.setOption({
+          tooltip:{trigger:'axis'}, grid:{left:48,right:20,top:24,bottom:52},
+          xAxis:{type:'category',data:byNode.map(n => n.tag),axisLabel:{fontSize:10,rotate:30}},
+          yAxis:{type:'value',name:'ms'},
+          series:[{name:'平均切换耗时',type:'bar',data:byNode.map(n => Number(n.avg_ms || 0).toFixed(1))}]
+        }, true);
+      }
+    }
+    function metricsWanted() {
+      return authReady && !document.hidden && document.getElementById('dashboardTab').classList.contains('active');
+    }
+    function stopMetricsSSE() {
+      metricsGeneration++;
+      if (metricsRetryTimer !== null) clearTimeout(metricsRetryTimer);
+      metricsRetryTimer = null;
+      if (metricsSource) metricsSource.close();
+      metricsSource = null;
+      const status = document.getElementById('metricStreamStatus');
+      if (status) status.textContent = '未连接';
+    }
+    function connectMetricsSSE() {
+      if (!metricsWanted() || metricsSource || metricsRetryTimer !== null) return;
+      const generation = ++metricsGeneration;
+      const source = new EventSource('/api/metrics/stream'); metricsSource = source;
+      const status = document.getElementById('metricStreamStatus');
+      if (status) status.textContent = '连接中…';
+      source.onmessage = function(event) {
+        if (generation !== metricsGeneration || !metricsWanted()) return;
+        try {
+          const data = JSON.parse(event.data);
+          metricsRetryDelay = 1000;
+          if (status) status.textContent = '实时';
+          applyMetrics(data);
+        } catch (_) {}
+      };
+      source.onerror = function() {
+        if (generation !== metricsGeneration) return;
+        source.close(); metricsSource = null;
+        if (status) status.textContent = '重连中…';
+        if (!metricsWanted()) return;
+        const delay = metricsRetryDelay; metricsRetryDelay = Math.min(30000, metricsRetryDelay * 2);
+        metricsRetryTimer = setTimeout(async () => {
+          metricsRetryTimer = null;
+          if (generation !== metricsGeneration || !metricsWanted()) return;
+          try { const auth = await refreshAuthStatus(); if (!auth.authenticated) { invalidateAuth(); showModal('loginOverlay'); return; } }
+          catch (_) { if (!authReady || generation !== metricsGeneration) return; }
+          if (generation === metricsGeneration) connectMetricsSSE();
+        }, delay);
+      };
+    }
+
     function updateDashboardStats(data) {
       document.getElementById('totalNodes').textContent = data.total_nodes || allNodesCache.length;
       document.getElementById('healthyNodes').textContent = allNodesCache.filter(n => !n.blacklisted && n.initial_check_done && n.available).length;
@@ -1579,6 +2120,7 @@
       
       if(document.getElementById('dashboardTab').classList.contains('active')) {
         updateDashboardCharts();
+        loadMetrics();
       }
     }
 
@@ -1746,6 +2288,7 @@
     }
     function syncLiveResources() {
       if (trafficWanted()) connectTrafficSSE(); else stopTrafficSSE();
+      if (metricsWanted()) connectMetricsSSE(); else stopMetricsSSE();
       if (authReady && !document.hidden && document.getElementById('logsTab').classList.contains('active')) startLogPolling(); else stopLogPolling();
     }
     document.addEventListener('visibilitychange', () => {
@@ -1755,7 +2298,7 @@
         if (document.getElementById('sessionsTab').classList.contains('active')) loadProxySessions();
       }
     });
-    window.addEventListener('pagehide', () => { stopAutoRefresh(); stopLogPolling(); stopTrafficSSE(); for(const controller of activeRequests) controller.abort(); });
+    window.addEventListener('pagehide', () => { stopAutoRefresh(); stopLogPolling(); stopTrafficSSE(); stopMetricsSSE(); for(const controller of activeRequests) controller.abort(); });
     window.addEventListener('pageshow', () => { if(authReady) { if(isAutoRefresh) startAutoRefresh(); syncLiveResources(); } });
 
     function nodeStatus(n) {
@@ -1801,6 +2344,11 @@
       const visible = nodes.slice(0, nodeRenderLimit);
       tbody.innerHTML = visible.map(n => {
         const ms = Number.isFinite(n.last_latency_ms) ? n.last_latency_ms : -1;
+        const okCount = Number(n.success_count) || 0, failCount = Number(n.failure_count) || 0;
+        const successRate = (okCount + failCount) > 0 ? (okCount / (okCount + failCount) * 100).toFixed(1) + '%' : '-';
+        const nm = metricsByNode[n.tag] || {};
+        const zeroSense = `改道 ${nm.reroute_total || 0} · 熔断 ${nm.circuit_state || 'closed'} · 摘/恢 ${nm.evictions || 0}/${nm.recoveries || 0}`;
+        const zeroSenseTitle = `连续失败 ${failCount} · 平均延迟 ${ms >= 0 ? ms + 'ms' : '-'} · 平均改道耗时 ${Number(nm.avg_ms || 0).toFixed(1)}ms · 成功 ${okCount} / 失败 ${failCount}`;
         let badge = '', statusText = '';
         const status=nodeStatus(n);
         if(status === 'blacklisted') { badge='badge-error'; statusText='已拉黑'; }
@@ -1825,9 +2373,12 @@
           </td>
           <td class="tt-mono">${n.active_connections||0}</td>
           <td class="tt-mono" style="color: ${n.failure_count>0 ? 'var(--error)' : 'inherit'}">${n.failure_count||0}</td>
+          <td class="tt-mono">${successRate}</td>
+          <td class="tt-mono" style="font-size:11px" title="${escapeHtml(zeroSenseTitle)}">${escapeHtml(zeroSense)}</td>
           <td>
             <button class="btn btn-sm" onclick="probeNode('${escapeAttrJs(n.tag)}')">探测</button>
             ${n.blacklisted ? `<button class="btn btn-sm btn-primary" onclick="releaseNode('${escapeAttrJs(n.tag)}')">解封</button>` : `<button class="btn btn-sm btn-danger" onclick="blacklistNode('${escapeAttrJs(n.tag)}')">拉黑</button>`}
+            <button class="btn btn-sm btn-danger" title="删除节点（无需确认；订阅/扩展来源刷新后会重新出现）" onclick="deleteNodeFromDashboard('${escapeAttrJs(n.name || n.tag)}')">删除</button>
           </td>
         </tr>`;
       }).join('');
@@ -1845,6 +2396,15 @@
     function showMoreNodes() {
       nodeRenderLimit += 300;
       applyNodeFilters();
+    }
+
+    async function deleteNodeFromDashboard(name) {
+      if (!name) return;
+      try {
+        await apiFetch('/api/nodes/config/' + encodeURIComponent(name), {method: 'DELETE'});
+        showToast('已删除；订阅/扩展来源会在下次刷新后重新出现，点击「重载核心」生效');
+        refresh();
+      } catch (e) { showToast(e.message || '删除失败', 'error'); }
     }
 
     async function probeNode(tag) {
@@ -1995,16 +2555,110 @@
     }
     function showMoreConfigNodes() { configRenderLimit+=300; renderConfigNodes(); }
 
-    function showAddNodeModal() { isEditMode=false; document.getElementById('nodeModalTitle').textContent='添加节点'; document.getElementById('nodeName').value=''; document.getElementById('nodeUri').value=''; document.getElementById('nodePort').value=''; showModal('nodeModalOverlay');}
-    function showEditNodeModal(name) { 
-      const n = configNodes.find(x=>x.name===name); if(!n) return;
-      isEditMode=true; document.getElementById('nodeModalTitle').textContent='编辑节点';
-      document.getElementById('nodeName').value=n.name; document.getElementById('nodeUri').value=n.uri; document.getElementById('nodePort').value=n.port||''; document.getElementById('nodeEditName').value=n.name;
+    function syncNodeInputMode() {
+      const form = (document.getElementById('nodeInputMode').value || 'uri') === 'form';
+      document.getElementById('nodeUriGroup').hidden = form;
+      document.getElementById('nodeFormGroup').hidden = !form;
+      document.getElementById('nodeInputMode').disabled = isEditMode;
+      if (form) syncNodeFormFields();
+    }
+    function syncNodeFormFields() {
+      const proto = document.getElementById('nodeProto').value || 'socks5';
+      document.getElementById('nodeGroupAuth').hidden = !(proto === 'socks5' || proto === 'http');
+      document.getElementById('nodeGroupSs').hidden = proto !== 'ss';
+      document.getElementById('nodeGroupVless').hidden = proto !== 'vless';
+      document.getElementById('nodeGroupTrojan').hidden = proto !== 'trojan';
+    }
+    function base64Utf8(text) {
+      if (typeof btoa === 'undefined') return '';
+      return btoa(unescape(encodeURIComponent(text)));
+    }
+    function buildNodeUriFromForm() {
+      const proto = document.getElementById('nodeProto').value || 'socks5';
+      const server = (document.getElementById('nodeServer').value || '').trim();
+      const port = parseInt(document.getElementById('nodeFormPort').value) || 0;
+      const name = (document.getElementById('nodeName').value || '').trim();
+      if (!server) throw new Error('服务器必填');
+      if (!port || port < 1 || port > 65535) throw new Error('端口必填且需在 1-65535');
+      const frag = name ? '#' + encodeURIComponent(name) : '';
+      if (proto === 'socks5' || proto === 'http') {
+        const user = (document.getElementById('nodeUserForm').value || '').trim();
+        const pass = document.getElementById('nodePassForm').value || '';
+        const auth = user ? encodeURIComponent(user) + (pass ? ':' + encodeURIComponent(pass) : '') + '@' : '';
+        return proto + '://' + auth + server + ':' + port + frag;
+      }
+      if (proto === 'ss') {
+        const method = (document.getElementById('nodeSsMethod').value || '').trim();
+        const pass = document.getElementById('nodeSsPass').value || '';
+        if (!method) throw new Error('SS 加密方式必填');
+        if (!pass) throw new Error('SS 密码必填');
+        return 'ss://' + base64Utf8(method + ':' + pass) + '@' + server + ':' + port + frag;
+      }
+      if (proto === 'vless') {
+        const uuid = (document.getElementById('nodeVlessUuid').value || '').trim();
+        if (!uuid) throw new Error('VLESS UUID 必填');
+        const security = document.getElementById('nodeVlessSecurity').value || 'none';
+        const sni = (document.getElementById('nodeVlessSni').value || '').trim();
+        const network = document.getElementById('nodeVlessNetwork').value || 'tcp';
+        const path = (document.getElementById('nodeVlessPath').value || '').trim();
+        const query = ['encryption=none'];
+        if (security !== 'none') query.push('security=' + encodeURIComponent(security));
+        if (sni) query.push('sni=' + encodeURIComponent(sni));
+        if (network !== 'tcp') query.push('type=' + encodeURIComponent(network));
+        if (path) query.push((network === 'grpc' ? 'serviceName=' : 'path=') + encodeURIComponent(path));
+        return 'vless://' + encodeURIComponent(uuid) + '@' + server + ':' + port + '?' + query.join('&') + frag;
+      }
+      if (proto === 'trojan') {
+        const pass = document.getElementById('nodeTrojanPass').value || '';
+        if (!pass) throw new Error('Trojan 密码必填');
+        const sni = (document.getElementById('nodeTrojanSni').value || '').trim();
+        const query = [];
+        if (sni) query.push('sni=' + encodeURIComponent(sni));
+        query.push('allowInsecure=1');
+        return 'trojan://' + encodeURIComponent(pass) + '@' + server + ':' + port + '?' + query.join('&') + frag;
+      }
+      throw new Error('不支持的协议');
+    }
+    function resetNodeForm() {
+      for (const id of ['nodeUri','nodeServer','nodeFormPort','nodeUserForm','nodePassForm','nodeSsPass','nodeVlessUuid','nodeVlessSni','nodeVlessPath','nodeTrojanPass','nodeTrojanSni']) {
+        const el = document.getElementById(id); if (el) el.value = '';
+      }
+      document.getElementById('nodeInputMode').value = 'uri';
+      document.getElementById('nodeProto').value = 'socks5';
+      document.getElementById('nodeSsMethod').value = 'aes-128-gcm';
+      document.getElementById('nodeVlessSecurity').value = 'none';
+      document.getElementById('nodeVlessNetwork').value = 'tcp';
+      syncNodeInputMode();
+    }
+    function showAddNodeModal() {
+      isEditMode = false;
+      document.getElementById('nodeModalTitle').textContent = '添加节点';
+      document.getElementById('nodeName').value = '';
+      document.getElementById('nodePort').value = '';
+      document.getElementById('nodeEditName').value = '';
+      resetNodeForm();
+      showModal('nodeModalOverlay');
+    }
+    function showEditNodeModal(name) {
+      const n = configNodes.find(x => x.name === name); if (!n) return;
+      isEditMode = true;
+      document.getElementById('nodeModalTitle').textContent = '编辑节点';
+      document.getElementById('nodeName').value = n.name;
+      document.getElementById('nodeUri').value = n.uri;
+      document.getElementById('nodePort').value = n.port || '';
+      document.getElementById('nodeEditName').value = n.name;
+      document.getElementById('nodeInputMode').value = 'uri';
+      syncNodeInputMode();
       showModal('nodeModalOverlay');
     }
     async function handleNodeSubmit(e) {
       e.preventDefault();
-      const p = { name: document.getElementById('nodeName').value, uri: document.getElementById('nodeUri').value, port: parseInt(document.getElementById('nodePort').value)||0 };
+      let uri = (document.getElementById('nodeUri').value || '').trim();
+      if ((document.getElementById('nodeInputMode').value || 'uri') === 'form') {
+        try { uri = buildNodeUriFromForm(); } catch (err) { showToast(err.message, 'error'); return; }
+      }
+      if (!uri) { showToast('请填写节点 URI 或切换到表单填写', 'error'); return; }
+      const p = { name: document.getElementById('nodeName').value, uri, port: parseInt(document.getElementById('nodePort').value) || 0 };
       try {
         const editName = document.getElementById('nodeEditName').value;
         const url = isEditMode ? '/api/nodes/config/'+encodeURIComponent(editName) : '/api/nodes/config';
@@ -2013,6 +2667,52 @@
         if(r.ok) { closeModal('nodeModalOverlay'); showToast('成功'); loadConfigNodes(); } else { const d = await r.json(); showToast(d.error, 'error'); }
       } catch(e){ showToast(e.message || '请求失败，请重试','error'); }
     }
+    let nodeImportItems = [];
+    function showNodeImportModal() {
+      nodeImportItems = [];
+      document.getElementById('nodeImportText').value = '';
+      document.getElementById('nodeImportMode').value = 'clash';
+      document.getElementById('nodeImportPreview').innerHTML = '';
+      document.getElementById('nodeImportStatus').textContent = '';
+      showModal('nodeImportOverlay');
+    }
+    async function previewNodeImport() {
+      const mode = document.getElementById('nodeImportMode').value;
+      const text = document.getElementById('nodeImportText').value || '';
+      const status = document.getElementById('nodeImportStatus');
+      if (!text.trim()) { status.textContent = '请先粘贴内容'; return; }
+      const payload = mode === 'clash'
+        ? {mode: 'clash', yaml: text}
+        : {mode: 'urls', urls: text.split('\n').map(s => s.trim()).filter(Boolean)};
+      try {
+        const r = await apiFetch('/api/nodes/preview', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+        const d = await r.json();
+        if (d.error) { status.textContent = d.error; return; }
+        nodeImportItems = d.items || [];
+        status.textContent = `解析 ${d.summary.total} 条，去重后 ${d.summary.unique} 条，重复 ${d.summary.duplicate} 条`;
+        document.getElementById('nodeImportPreview').innerHTML = nodeImportItems.map(it =>
+          `<tr><td>${escapeHtml(it.name||'-')}</td><td class="tt-mono cell-trunc" title="${escapeHtml(it.uri)}">${escapeHtml(it.uri)}</td><td>${it.duplicate ? '<span class="badge badge-warning">重复</span>' : '<span class="badge badge-healthy">新增</span>'}</td></tr>`
+        ).join('');
+      } catch (e) { status.textContent = e.message || '预览失败'; }
+    }
+    async function confirmNodeImport() {
+      const unique = nodeImportItems.filter(it => !it.duplicate);
+      const status = document.getElementById('nodeImportStatus');
+      if (!unique.length) { status.textContent = '没有可添加的节点（请先预览）'; return; }
+      status.textContent = `提交 ${unique.length} 条...`;
+      try {
+        const r = await apiFetch('/api/nodes/config/batch', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({nodes: unique.map(it => ({name: it.name, uri: it.uri, port: 0}))}),
+        });
+        const d = await r.json();
+        if (d.error) { status.textContent = d.error; return; }
+        showToast(d.message || '批量添加完成');
+        closeModal('nodeImportOverlay');
+        loadConfigNodes();
+      } catch (e) { status.textContent = e.message || '提交失败'; }
+    }
+
     async function deleteNode(name) {
       if(!confirm(`确定删除节点 ${name}？修改后请重载核心生效。`)) return;
       try {
@@ -2046,21 +2746,75 @@
       const visible=filtered.slice(0,debugRenderLimit);
       document.getElementById('debugFilterCount').textContent=`${filtered.length.toLocaleString()} / ${nodes.length.toLocaleString()} 个节点`;
       document.getElementById('debugNodesEmpty').hidden=filtered.length>0;
-      document.getElementById('debugNodesTableBody').innerHTML = visible.map(n => {
+      document.getElementById('debugNodesTableBody').innerHTML = visible.map((n, idx) => {
           const calls = (n.success_count||0)+(n.failure_count||0);
           const sr = calls>0 ? ((n.success_count||0)/calls*100).toFixed(1) : 0;
           const tl = (n.timeline||[]).slice(-30).map(t => `<div class="tl-dot ${t.success?'success':'error'}" title="${t.latency_ms}ms"></div>`).join('');
-          return `<tr>
+          return `<tr style="cursor:pointer" title="点击展开全维度验证质量" onclick="toggleDebugDetail(${idx})">
             <td><strong class="cell-trunc" style="display:inline-block;vertical-align:bottom" title="${escapeHtml(n.name)}">${escapeHtml(n.name)}</strong><br><span class="cell-trunc" style="display:inline-block;vertical-align:bottom;font-size:11px;color:var(--text-muted)" title="${escapeHtml(n.tag)}">${escapeHtml(n.tag)}</span></td>
             <td class="tt-mono ${sr>80?'':'badge-error'}">${sr}%</td>
             <td class="tt-mono"><span style="color:var(--success)">${n.success_count||0}</span> / <span style="color:var(--error)">${n.failure_count||0}</span></td>
             <td class="tt-mono">${n.active_connections||0}</td>
             <td><div class="timeline">${tl||'-'}</div></td>
-          </tr>`
+          </tr>` + debugQualityDetail(n, idx)
         }).join('');
       renderPaging('debugNodesPaging',filtered.length,visible.length,'showMoreDebugNodes');
     }
     function showMoreDebugNodes() { debugRenderLimit+=300; renderDebugNodes(); }
+
+    function debugQualityFor(n) {
+      const status = (typeof extStatusCache !== 'undefined' && extStatusCache) ? extStatusCache : null;
+      const results = (status && status.results) || [];
+      const name = n.name || n.tag;
+      return results.find(r => r.node === name || r.node === n.tag) || null;
+    }
+    function debugQualityDetail(n, idx) {
+      const q = debugQualityFor(n);
+      const action = `<button class="btn btn-sm" onclick="event.stopPropagation(); verifyNodeQuality('${escapeAttrJs(n.name || n.tag)}')">严格验证</button>`;
+      if (!q) {
+        return `<tr id="debugDetail${idx}" hidden><td colspan="5" class="form-help">未严格验证（仅健康探测）。${action}</td></tr>`;
+      }
+      const checks = Object.entries(q.checks || {}).map(([k, v]) => `${k}=${v ? '✓' : '✗'}`).join(' ');
+      const reasons = [].concat(q.genuine_reasons || [], q.mitm_reasons || []).join('; ');
+      return `<tr id="debugDetail${idx}" hidden><td colspan="5" class="form-help" style="line-height:1.9">
+        分数 <strong>${q.score}</strong>（${escapeHtml(q.grade || '-')}）· 出口 ${escapeHtml(q.exit_ip || '-')} · 直连 ${escapeHtml(q.direct_ip || '-')} · 地区 ${escapeHtml(q.region || '-')} · 延迟 ${q.latency_ms || 0}ms · 总耗时 ${q.total_ms || 0}ms · 带宽 ${q.speed_bps || 0} B/s · 匿名 ${escapeHtml(q.anonymity || '-')} · DNS 泄漏 ${q.dns_leak_risk ? '是' : '否'} · 真实性 ${q.genuine ? '通过' : '未通过'} · MITM ${q.mitm_suspected ? '疑似' : '未发现'} · 检查于 ${escapeHtml(q.checked_at || '-')} ${action}<br/>
+        ${escapeHtml(checks)}${reasons ? '<br/>原因：' + escapeHtml(reasons) : ''}
+      </td></tr>`;
+    }
+    async function verifyNodeQuality(name) {
+      if (!name) return;
+      showToast('严格验证中（可能需要数十秒）...');
+      try {
+        const r = await apiFetch('/api/nodes/verify', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({tags: [name]}), timeoutMs: 180000,
+        });
+        const d = await r.json();
+        if (d.error) { showToast(d.error, 'error'); return; }
+        showToast(`严格验证完成：${d.verified || 0} 个，跳过 ${d.skipped || 0}`);
+        await loadDebugData();
+        await loadExtStatus();
+      } catch (e) { showToast(e.message || '验证失败', 'error'); }
+    }
+    async function verifyAllNodeQuality() {
+      if (!confirm('对全部节点执行严格验证？可能耗时数分钟并占用带宽。')) return;
+      showToast('整池严格验证中...');
+      try {
+        const r = await apiFetch('/api/nodes/verify', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({all: true}), timeoutMs: 300000,
+        });
+        const d = await r.json();
+        if (d.error) { showToast(d.error, 'error'); return; }
+        showToast(`严格验证完成：${d.verified || 0} 个，跳过 ${d.skipped || 0}`);
+        await loadDebugData();
+        await loadExtStatus();
+      } catch (e) { showToast(e.message || '验证失败', 'error'); }
+    }
+    function toggleDebugDetail(idx) {
+      const row = document.getElementById('debugDetail' + idx);
+      if (row) row.hidden = !row.hidden;
+    }
 
     function updateDebugCharts(globalRate=debugSuccessRate) {
       if (typeof echarts === 'undefined') return;
@@ -2262,6 +3016,12 @@
     window.addEventListener('pagehide',clearGeneratedLink);
 
     // Settings
+    function syncFallbackWarning() {
+      const select = document.getElementById('settingPoolFallback');
+      const warning = document.getElementById('poolFallbackWarning');
+      if (!select || !warning) return;
+      warning.hidden = select.value !== 'direct';
+    }
     async function loadSettingsPage() {
       const epoch=authEpoch;
       settingsLoaded = false;
@@ -2270,7 +3030,6 @@
         const r = await apiFetch('/api/settings'); const d = await r.json();
         if(epoch!==authEpoch || !authReady) return;
         // General
-        document.getElementById('settingMode').value = d.mode || 'pool';
         document.getElementById('settingExternalIP').value = d.external_ip||'';
         document.getElementById('settingProbeTarget').value = d.probe_target||'';
         document.getElementById('settingSkipCertVerify').checked = d.skip_cert_verify||false;
@@ -2294,6 +3053,12 @@
         document.getElementById('settingPoolTransient').value = pl.transient_cooldown || '60s';
         document.getElementById('settingPoolRateLimit').value = pl.rate_limit_cooldown || '60s';
         document.getElementById('settingPoolBlacklistPin').checked = pl.blacklist_failed_pin !== false;
+        document.getElementById('settingPoolSwitchBudget').value = pl.switch_budget || '3s';
+        document.getElementById('settingPoolDialTimeout').value = pl.dial_timeout || '0s';
+        document.getElementById('settingPoolHealthInterval').value = pl.health_interval || '5m';
+        document.getElementById('settingPoolFallback').value = pl.fallback || 'none';
+        document.getElementById('settingPoolCircuitEnabled').checked = pl.enable_circuit_breaker !== false;
+        syncFallbackWarning();
         // Sticky
         const st = d.sticky || {};
         document.getElementById('settingStickyEnabled').checked = !!st.enabled;
@@ -2346,7 +3111,6 @@
     }
     function _buildCoreSnapshot() {
       return JSON.stringify({
-        mode: document.getElementById('settingMode').value,
         external_ip: document.getElementById('settingExternalIP').value,
         probe_target: document.getElementById('settingProbeTarget').value,
         skip_cert_verify: document.getElementById('settingSkipCertVerify').checked,
@@ -2363,6 +3127,11 @@
         pool_blacklist: document.getElementById('settingPoolBlacklist').value,
         pool_transient: document.getElementById('settingPoolTransient').value,
         pool_ratelimit: document.getElementById('settingPoolRateLimit').value,
+        pool_switch_budget: document.getElementById('settingPoolSwitchBudget').value,
+        pool_dial_timeout: document.getElementById('settingPoolDialTimeout').value,
+        pool_health_interval: document.getElementById('settingPoolHealthInterval').value,
+        pool_fallback: document.getElementById('settingPoolFallback').value,
+        pool_circuit_enabled: document.getElementById('settingPoolCircuitEnabled').checked,
         sticky_enabled: document.getElementById('settingStickyEnabled').checked,
         sticky_port: document.getElementById('settingStickyPort').value,
         session_enabled: document.getElementById('settingSessionEnabled').checked,
@@ -2418,7 +3187,6 @@
           external_ip: document.getElementById('settingExternalIP').value,
           probe_target: document.getElementById('settingProbeTarget').value,
           skip_cert_verify: document.getElementById('settingSkipCertVerify').checked,
-          mode: document.getElementById('settingMode').value,
           listener: {
             address: document.getElementById('settingListenerAddr').value,
             port: parseInt(document.getElementById('settingListenerPort').value) || 0,
@@ -2438,6 +3206,11 @@
             transient_cooldown: document.getElementById('settingPoolTransient').value || '60s',
             rate_limit_cooldown: document.getElementById('settingPoolRateLimit').value || '60s',
             blacklist_failed_pin: document.getElementById('settingPoolBlacklistPin').checked,
+            switch_budget: document.getElementById('settingPoolSwitchBudget').value || '3s',
+            dial_timeout: document.getElementById('settingPoolDialTimeout').value || '0s',
+            health_interval: document.getElementById('settingPoolHealthInterval').value || '5m',
+            fallback: document.getElementById('settingPoolFallback').value || 'none',
+            enable_circuit_breaker: document.getElementById('settingPoolCircuitEnabled').checked,
           },
           sticky: {
             enabled: document.getElementById('settingStickyEnabled').checked,
@@ -2519,13 +3292,16 @@
     let logsLoading = false;
     let logGeneration = 0;
     let logController = null;
+    let logEntriesLoading = false;
+    let logSearchTimer = null;
     function startLogPolling() {
       if (!authReady || document.hidden) return;
-      if (!logPollInterval) { pollLogs(); logPollInterval=setInterval(pollLogs,2000); }
+      if (!logPollInterval) { pollLogs(); pollLogEntries(); logPollInterval=setInterval(()=>{ pollLogs(); pollLogEntries(); },2000); }
     }
     function stopLogPolling() {
       if (logPollInterval) clearInterval(logPollInterval);
       logPollInterval=null; logGeneration++;
+      if(logSearchTimer) { clearTimeout(logSearchTimer); logSearchTimer=null; }
       if(logController) logController.abort();
     }
     async function pollLogs() {
@@ -2545,6 +3321,52 @@
       } catch(error) {
         if(generation===logGeneration) document.getElementById('logStatus').textContent='读取失败 · '+error.message;
       } finally { logsLoading=false; if(logController===controller) logController=null; }
+    }
+
+    function switchLogView() {
+      const raw = (document.getElementById('logViewSelect').value || 'entries') === 'raw';
+      const entriesView=document.getElementById('logEntriesView'), rawView=document.getElementById('logRawView');
+      if (entriesView) entriesView.style.display = raw ? 'none' : '';
+      if (rawView) rawView.style.display = raw ? '' : 'none';
+      if (raw) pollLogs(); else pollLogEntries();
+    }
+    function scheduleLogEntriesPoll() {
+      if (logSearchTimer) clearTimeout(logSearchTimer);
+      logSearchTimer=setTimeout(()=>{ logSearchTimer=null; pollLogEntries(); },300);
+    }
+    function logFieldsText(fields) {
+      if (!fields) return '';
+      return Object.keys(fields).map(k => k+'='+String(fields[k])).join(' ');
+    }
+    function renderLogEntries(entries) {
+      const body=document.getElementById('logEntriesBody');
+      if (!body) return;
+      body.innerHTML=entries.map(e => {
+        const when=e.ts ? new Date(e.ts).toLocaleTimeString('zh-CN',{hour12:false}) : '';
+        const badge=(e.level==='ERROR'||e.level==='WARN') ? 'badge-error' : 'badge-healthy';
+        return '<tr><td class="tt-mono">'+escapeHtml(when)+'</td><td><span class="badge '+badge+'">'+escapeHtml(e.level||'')+'</span></td>'
+          +'<td class="tt-mono">'+escapeHtml(e.category||'')+'</td><td class="tt-mono">'+escapeHtml(e.source||'-')+'</td>'
+          +'<td class="tt-mono" title="'+escapeHtml(logFieldsText(e.fields))+'">'+escapeHtml(e.message||'')+'</td></tr>';
+      }).join('');
+      const empty=document.getElementById('logEntriesEmpty');
+      if (empty) empty.hidden=entries.length>0;
+    }
+    async function pollLogEntries() {
+      if (logEntriesLoading || !authReady || document.hidden || !document.getElementById('logsTab').classList.contains('active')) return;
+      logEntriesLoading=true;
+      const generation=logGeneration;
+      const level=document.getElementById('logLevelFilter').value || 'all';
+      const category=document.getElementById('logCategoryFilter').value || 'all';
+      const q=(document.getElementById('logSearch').value||'').trim();
+      const url='/api/logs?level='+encodeURIComponent(level)+'&category='+encodeURIComponent(category)+'&q='+encodeURIComponent(q)+'&limit=200';
+      try {
+        const data=await requestJSON(url);
+        if(generation!==logGeneration || !authReady) return;
+        renderLogEntries(data.entries||[]);
+        const count=document.getElementById('logEntryCount');
+        if (count) count.textContent=(data.total||0)+' 条';
+      } catch(_) { /* structured logs must never break the console view */ }
+      finally { logEntriesLoading=false; }
     }
 
     // ─── Theme System: Dark / Light / Auto (follow OS) ───
@@ -3054,102 +3876,8 @@
       finally{ if(btn) btn.disabled=false; }
     }
 
-    /* ---- 用户分池：按基础用户名划分节点子集 ---- */
-    let userPoolsCache = [];
-    let editingUserPoolIndex = -1;
-    let userPoolSelected = new Set();
-
-    async function loadUserPools(){
-      try{
-        const d=await requestJSON('/api/pool/user-pools');
-        userPoolsCache=d.pools||[];
-        renderUserPools();
-      }catch(e){ console.warn('[pools]', e.message); }
-    }
-
-    function renderUserPools(){
-      const body=document.getElementById('userPoolsBody');
-      const empty=document.getElementById('userPoolsEmpty');
-      if(!body) return;
-      if(empty) empty.hidden=userPoolsCache.length>0;
-      body.innerHTML=userPoolsCache.map((p,i)=>`<tr>
-        <td>${escapeHtml(p.name)}</td>
-        <td>${escapeHtml((p.users||[]).join(', '))}</td>
-        <td>${(p.nodes||[]).length ? escapeHtml(String((p.nodes||[]).length))+' 个' : '全部节点'}</td>
-        <td><button class="btn btn-sm" onclick="openUserPoolEditor(${i})">编辑</button>
-            <button class="btn btn-sm btn-danger" onclick="deleteUserPool(${i})">删除</button></td>
-      </tr>`).join('');
-    }
-
-    function openUserPoolEditor(index){
-      editingUserPoolIndex = (typeof index === 'number') ? index : -1;
-      const pool = editingUserPoolIndex >= 0 ? userPoolsCache[editingUserPoolIndex] : {name:'',users:[],nodes:[]};
-      document.getElementById('userPoolModalTitle').textContent = editingUserPoolIndex >= 0 ? '编辑用户分池' : '新增用户分池';
-      document.getElementById('userPoolName').value = pool.name || '';
-      document.getElementById('userPoolUsers').value = (pool.users||[]).join('\n');
-      document.getElementById('userPoolNodeSearch').value = '';
-      userPoolSelected = new Set(pool.nodes||[]);
-      renderUserPoolNodePicker();
-      showModal('userPoolModalOverlay');
-    }
-
-    function renderUserPoolNodePicker(){
-      const box=document.getElementById('userPoolNodePicker');
-      if(!box) return;
-      const q=(document.getElementById('userPoolNodeSearch')?.value||'').trim().toLowerCase();
-      const nodes=(allNodesCache||[]).filter(n=>!q || [n.name,n.tag].some(v=>String(v||'').toLowerCase().includes(q)));
-      const known=new Set((allNodesCache||[]).map(n=>n.tag));
-      const missing=[...userPoolSelected].filter(t=>!known.has(t));
-      const missingRows=missing.map(t=>`<label class="checkbox-row" style="padding:4px 2px;color:var(--warning);">
-          <input type="checkbox" checked onchange="toggleUserPoolNode('${escapeAttrJs(t)}',this.checked)">
-          <span>缺失节点 ${escapeHtml(t)}（当前节点列表中不存在）</span></label>`).join('');
-      const rows=nodes.map(n=>{
-        const checked=userPoolSelected.has(n.tag);
-        const meta=extMetaFor(n);
-        return `<label class="checkbox-row" style="padding:4px 2px;">
-          <input type="checkbox" ${checked?'checked':''} onchange="toggleUserPoolNode('${escapeAttrJs(n.tag)}',this.checked)">
-          <span>${escapeHtml(n.name||n.tag)} <span class="form-help">${escapeHtml(n.tag)} · ${escapeHtml(extSourceLabel(meta.source))}</span></span>
-        </label>`;
-      }).join('');
-      box.innerHTML=(missingRows+rows)||'<div class="form-help">暂无匹配节点。</div>';
-      const count=document.getElementById('userPoolCount');
-      if(count) count.value=userPoolSelected.size ? `${userPoolSelected.size} 个` : '全部';
-    }
-
-    function toggleUserPoolNode(tag,checked){
-      if(checked) userPoolSelected.add(tag); else userPoolSelected.delete(tag);
-      renderUserPoolNodePicker();
-    }
-
-    async function saveUserPool(){
-      const name=(document.getElementById('userPoolName').value||'').trim();
-      if(!name){ showToast('请填写池名','error'); return; }
-      const users=(document.getElementById('userPoolUsers').value||'').split('\n').map(s=>s.trim()).filter(Boolean);
-      if(!users.length){ showToast('请至少填写一个用户名','error'); return; }
-      const next=userPoolsCache.map(p=>({...p}));
-      const entry={name,users,nodes:[...userPoolSelected]};
-      if(editingUserPoolIndex>=0) next[editingUserPoolIndex]=entry; else next.push(entry);
-      await putUserPools(next);
-    }
-
-    async function deleteUserPool(index){
-      if(!confirm('确认删除该分池？该池用户将回落到默认池（全部节点）。')) return;
-      await putUserPools(userPoolsCache.filter((_,i)=>i!==index));
-    }
-
-    async function putUserPools(pools){
-      try{
-        const r=await apiFetch('/api/pool/user-pools',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({pools})});
-        const d=await r.json();
-        userPoolsCache=d.pools||pools;
-        renderUserPools();
-        closeModal('userPoolModalOverlay');
-        showToast(d.message||'已保存并立即生效','success');
-      }catch(e){ showToast('保存失败：'+e.message,'error'); }
-    }
-
     // Init App
-    checkAuth().then(ok => { if(ok) { attachExtHandlers(); refresh(); loadExtStatus(); loadUserPools(); startAutoRefresh(); } });
+    checkAuth().then(ok => { if(ok) { attachExtHandlers(); refresh(); loadExtStatus(); startAutoRefresh(); } });
 
     // Fetch GitHub stars
     fetch('https://api.github.com/repos/jasonwong1991/easy_proxies')

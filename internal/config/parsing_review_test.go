@@ -58,8 +58,8 @@ func TestClashURIIPv6AndCredentials(t *testing.T) {
 }
 
 func TestValidateSettingsRejectsInvalidValues(t *testing.T) {
-	for _, mutate := range []func(*Config){func(c *Config) { c.Mode = "invalid" }, func(c *Config) { c.Pool.Mode = "invalid" }, func(c *Config) { c.Listener.Address = "host.invalid" }, func(c *Config) { c.Management.Listen = "127.0.0.1:65536" }, func(c *Config) { c.Pool.BlacklistDuration = -1 }, func(c *Config) { c.Management.ProbeConcurrency = 9999 }} {
-		cfg := &Config{Mode: "pool"}
+	for _, mutate := range []func(*Config){func(c *Config) { c.Pool.Mode = "invalid" }, func(c *Config) { c.Listener.Address = "host.invalid" }, func(c *Config) { c.Management.Listen = "127.0.0.1:65536" }, func(c *Config) { c.Pool.BlacklistDuration = -1 }, func(c *Config) { c.Management.ProbeConcurrency = 9999 }} {
+		cfg := &Config{}
 		mutate(cfg)
 		if cfg.ValidateManagementSettings() == nil {
 			t.Fatal("invalid setting accepted")

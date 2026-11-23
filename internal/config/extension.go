@@ -45,7 +45,7 @@ type MappingSourcesConfig struct {
 	Providers   []MappingProviderConfig `yaml:"providers" json:"providers"`
 	// Presets are the built-in FOFA / Hunter / Quake templates. They are plain
 	// configuration, not hardcoded platform clients, and stay fully editable.
-	Presets     []MappingPresetConfig   `yaml:"presets" json:"presets"`
+	Presets []MappingPresetConfig `yaml:"presets" json:"presets"`
 }
 
 // MappingPresetConfig is one built-in mapping platform. Only KeyEnv (the name
@@ -68,31 +68,31 @@ func DefaultMappingPresets() []MappingPresetConfig {
 	return []MappingPresetConfig{
 		{
 			Platform: "fofa", Enabled: false, KeyEnv: "FOFA_KEY", EmailEnv: "",
-			Query:    `protocol=="socks5" && country="CN" && banner="Method:No Authentication"`,
-			Size:     300, Encoding: "url",
+			Query: `protocol=="socks5" && country="CN" && banner="Method:No Authentication"`,
+			Size:  300, Encoding: "url",
 		},
 		{
 			Platform: "hunter", Enabled: false, KeyEnv: "HUNTER_API_KEY", EmailEnv: "",
-			Query:    `protocol=="socks5"&&protocol.banner="No authentication"&&ip.country="CN"`,
-			Size:     200, Encoding: "url",
+			Query: `protocol=="socks5"&&protocol.banner="No authentication"&&ip.country="CN"`,
+			Size:  200, Encoding: "url",
 		},
 		{
 			Platform: "quake", Enabled: false, KeyEnv: "QUAKE_TOKEN", EmailEnv: "",
-			Query:    `service:socks5  AND country: "CN" AND response:"No authentication"`,
-			Size:     500, Encoding: "url",
+			Query: `service:socks5  AND country: "CN" AND response:"No authentication"`,
+			Size:  500, Encoding: "url",
 		},
 	}
 }
 
 // MappingProviderConfig describes one user-defined mapping API provider.
 type MappingProviderConfig struct {
-	Name        string            `yaml:"name" json:"name"`
-	Enabled     bool              `yaml:"enabled" json:"enabled"`
-	Endpoint    string            `yaml:"endpoint" json:"endpoint"`
-	Method      string            `yaml:"method" json:"method"`
-	Auth        MappingAuthConfig `yaml:"auth" json:"auth"`
-	QueryParam  string            `yaml:"query_param" json:"query_param"`
-	Query       string            `yaml:"query" json:"query"`
+	Name       string            `yaml:"name" json:"name"`
+	Enabled    bool              `yaml:"enabled" json:"enabled"`
+	Endpoint   string            `yaml:"endpoint" json:"endpoint"`
+	Method     string            `yaml:"method" json:"method"`
+	Auth       MappingAuthConfig `yaml:"auth" json:"auth"`
+	QueryParam string            `yaml:"query_param" json:"query_param"`
+	Query      string            `yaml:"query" json:"query"`
 	// QueryEncoding transforms the raw query before it is placed in params:
 	// "" (plain), "std" (base64.StdEncoding) or "url" (base64.URLEncoding).
 	QueryEncoding string `yaml:"query_encoding" json:"query_encoding"`
@@ -239,7 +239,7 @@ type AuthenticityConfig struct {
 
 // MITMConfig controls the five-layer malicious-MITM detection.
 type MITMConfig struct {
-	Enabled *bool  `yaml:"enabled" json:"enabled"`
+	Enabled *bool `yaml:"enabled" json:"enabled"`
 	// ProbeURL must be a trusted HTTPS endpoint reachable both directly and
 	// through the candidate proxy; the direct result is the trusted baseline.
 	ProbeURL              string   `yaml:"probe_url" json:"probe_url"`

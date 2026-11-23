@@ -22,9 +22,13 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// ModeDualStack is the fixed runtime topology: the shared pool entry and the
+// per-node multi-port listeners are always enabled together. The legacy `mode`
+// YAML key is accepted for backward compatibility but no longer selects it.
+const ModeDualStack = "hybrid"
+
 // Config describes the high level settings for the proxy pool server.
 type Config struct {
-	Mode                string                    `yaml:"mode"`
 	Listener            ListenerConfig            `yaml:"listener"`
 	MultiPort           MultiPortConfig           `yaml:"multi_port"`
 	Pool                PoolConfig                `yaml:"pool"`
@@ -143,9 +147,61 @@ type PoolConfig struct {
 	// For pools with multiple members, each retry picks a different member when possible.
 	// For single-member pools (e.g. per-node multi-port pools), retries dial the same member.
 	RetryAttempts int `yaml:"retry_attempts,omitempty"`
-	// UserPools binds base usernames to explicit node subsets. Unmatched users
-	// use the default pool (all nodes). Selection is hot-swappable at runtime.
-	UserPools []UserPoolConfig `yaml:"user_pools,omitempty"`
+	// Legacy config.yaml user_pools binding was retired. Accounts and pools are
+	// now owned by /api/accounts (accounts.json) and published at runtime via
+	// config.SetAccountPools / config.PublishUserPools.
+	// SwitchBudget bounds the total time spent re-selecting nodes before the
+	// caller sees a failure. Default 3s.
+	SwitchBudget time.Duration `yaml:"switch_budget,omitempty"`
+	// DialTimeout bounds one upstream dial. Zero keeps the legacy behaviour.
+	DialTimeout time.Duration `yaml:"dial_timeout,omitempty"`
+	// HealthInterval controls periodic active probing. Default 5m.
+	HealthInterval time.Duration `yaml:"health_interval,omitempty"`
+	// EnableCircuitBreaker turns on per-node three-state circuit breaking.
+	// nil/unset → enabled.
+	EnableCircuitBreaker *bool `yaml:"enable_circuit_breaker,omitempty"`
+	// Fallback controls pool-wide behaviour when every node is unavailable:
+	// "none" (default), "default_pool", "direct".
+	Fallback string `yaml:"fallback,omitempty"`
+}
+
+// SwitchBudgetOrDefault bounds the whole failover loop.
+func (p PoolConfig) SwitchBudgetOrDefault() time.Duration {
+	if p.SwitchBudget <= 0 {
+		return 3 * time.Second
+	}
+	return p.SwitchBudget
+}
+
+// DialTimeoutOrDefault returns 0 when no per-dial deadline is configured.
+func (p PoolConfig) DialTimeoutOrDefault() time.Duration {
+	if p.DialTimeout <= 0 {
+		return 0
+	}
+	return p.DialTimeout
+}
+
+// HealthIntervalOrDefault keeps the legacy 5 minute sweep unless configured.
+func (p PoolConfig) HealthIntervalOrDefault() time.Duration {
+	if p.HealthInterval <= 0 {
+		return 5 * time.Minute
+	}
+	return p.HealthInterval
+}
+
+// CircuitBreakerEnabled reports whether per-node breakers are active.
+func (p PoolConfig) CircuitBreakerEnabled() bool {
+	return p.EnableCircuitBreaker == nil || *p.EnableCircuitBreaker
+}
+
+// FallbackOrDefault normalizes the pool-wide fallback policy.
+func (p PoolConfig) FallbackOrDefault() string {
+	switch p.Fallback {
+	case "default_pool", "direct":
+		return p.Fallback
+	default:
+		return "none"
+	}
 }
 
 // RetryEnabledOrDefault reports whether retry is enabled (default true).
@@ -387,18 +443,9 @@ func ExtractNodeName(uri string) string {
 }
 
 func (c *Config) normalize() error {
-	if c.Mode == "" {
-		c.Mode = "pool"
-	}
-	// Normalize mode name: support both multi-port and multi_port
-	if c.Mode == "multi_port" {
-		c.Mode = "multi-port"
-	}
-	switch c.Mode {
-	case "pool", "multi-port", "hybrid":
-	default:
-		return fmt.Errorf("unsupported mode %q (use 'pool', 'multi-port', or 'hybrid')", c.Mode)
-	}
+	// Dual-stack is the only supported topology: the shared pool entry and the
+	// per-node ports start together. mode is still parsed so legacy config files
+	// keep loading, but it no longer selects a topology.
 	if c.Listener.Address == "" {
 		c.Listener.Address = "0.0.0.0"
 	}
@@ -519,8 +566,17 @@ func (c *Config) normalize() error {
 		c.Nodes = append(c.Nodes, subNodes...)
 	}
 
-	if len(c.Nodes) == 0 && !c.Extension.Enabled {
-		return errors.New("config.nodes cannot be empty (configure nodes in config or use nodes_file)")
+	// Cross-source de-duplication by endpoint+protocol: inline, nodes_file,
+	// subscription and extension candidates all funnel through this point.
+	if deduped, dropped := DedupeNodes(c.Nodes); dropped > 0 {
+		log.Printf("🧹 Deduplicated %d node(s) sharing the same endpoint+protocol", dropped)
+		c.Nodes = deduped
+	}
+
+	// An empty pool is legal only when it falls back to direct; the builder then
+	// routes every request straight out instead of failing to start.
+	if len(c.Nodes) == 0 && !c.Extension.Enabled && c.Pool.FallbackOrDefault() != "direct" {
+		return errors.New("config.nodes cannot be empty (configure nodes in config, use nodes_file, or set pool.fallback: direct)")
 	}
 	// portCursor is an int (not uint16) so the >65535 exhaustion guard fires
 	// instead of wrapping to 0 and assigning unbindable low ports.
@@ -548,7 +604,7 @@ func (c *Config) normalize() error {
 		// right after normalize() returns. Probing IsPortAvailable per node here
 		// would double the socket open/close work at startup (16k+ syscalls for
 		// 8k nodes) for a result that is immediately discarded.
-		if c.Nodes[idx].Port == 0 && (c.Mode == "multi-port" || c.Mode == "hybrid") {
+		if c.Nodes[idx].Port == 0 && (ModeDualStack == "multi-port" || ModeDualStack == "hybrid") {
 			for portCursor <= 65535 && reservedPorts[uint16(portCursor)] {
 				portCursor++
 			}
@@ -564,7 +620,7 @@ func (c *Config) normalize() error {
 			portCursor++
 		}
 
-		if c.Mode == "multi-port" || c.Mode == "hybrid" {
+		if ModeDualStack == "multi-port" || ModeDualStack == "hybrid" {
 			if c.Nodes[idx].Username == "" {
 				c.Nodes[idx].Username = c.MultiPort.Username
 				c.Nodes[idx].Password = c.MultiPort.Password
@@ -579,7 +635,7 @@ func (c *Config) normalize() error {
 	c.normalizeLogConfig()
 
 	// Auto-fix port conflicts in hybrid mode (pool port vs multi-port)
-	if c.Mode == "hybrid" {
+	if ModeDualStack == "hybrid" {
 		poolPort := c.Listener.Port
 		usedPorts := c.reservedListenerPorts()
 		for idx := range c.Nodes {
@@ -703,7 +759,7 @@ func (c *Config) SaveNodePortMap() error {
 	if c == nil {
 		return errors.New("config is nil")
 	}
-	if c.Mode != "multi-port" && c.Mode != "hybrid" {
+	if ModeDualStack != "multi-port" && ModeDualStack != "hybrid" {
 		return nil
 	}
 	path := c.portMapPath()
@@ -730,7 +786,7 @@ func (c *Config) SaveNodePortMap() error {
 // non-conflicting ports. Explicit inline ports take precedence over that node's
 // old saved assignment. A corrupt or missing sidecar means "no saved ports".
 func (c *Config) applyPersistedPorts(explicitPorts []bool) error {
-	if c.Mode != "multi-port" && c.Mode != "hybrid" {
+	if ModeDualStack != "multi-port" && ModeDualStack != "hybrid" {
 		return nil
 	}
 	// normalize() only assigned provisional ports (no bind checks). Run the
@@ -766,17 +822,8 @@ func (c *Config) applyPersistedPorts(explicitPorts []bool) error {
 // NormalizeWithPortMap applies defaults and validation, preserving port assignments
 // for nodes that exist in the provided port map.
 func (c *Config) NormalizeWithPortMap(portMap map[string]uint16) error {
-	if c.Mode == "" {
-		c.Mode = "pool"
-	}
-	if c.Mode == "multi_port" {
-		c.Mode = "multi-port"
-	}
-	switch c.Mode {
-	case "pool", "multi-port", "hybrid":
-	default:
-		return fmt.Errorf("unsupported mode %q (use 'pool', 'multi-port', or 'hybrid')", c.Mode)
-	}
+	// Same fixed dual-stack topology as normalize(): reloads must not diverge
+	// from a fresh start.
 	if c.Listener.Address == "" {
 		c.Listener.Address = "0.0.0.0"
 	}
@@ -836,8 +883,14 @@ func (c *Config) NormalizeWithPortMap(portMap map[string]uint16) error {
 	}
 	c.SubscriptionRefresh.FetchConcurrency = normalizeSubscriptionFetchConcurrency(c.SubscriptionRefresh.FetchConcurrency)
 
-	if len(c.Nodes) == 0 {
-		return errors.New("config.nodes cannot be empty")
+	// Re-deduplicate before validation: reload paths can receive nodes from
+	// several sources after the initial normalize().
+	if deduped, dropped := DedupeNodes(c.Nodes); dropped > 0 {
+		log.Printf("🧹 Deduplicated %d node(s) before validation", dropped)
+		c.Nodes = deduped
+	}
+	if len(c.Nodes) == 0 && c.Pool.FallbackOrDefault() != "direct" {
+		return errors.New("config.nodes cannot be empty (set pool.fallback: direct to run without nodes)")
 	}
 
 	// Build set of ports already assigned from portMap
@@ -868,7 +921,7 @@ func (c *Config) NormalizeWithPortMap(portMap map[string]uint16) error {
 		// different display names): preserving it again would bind the same
 		// proxy port twice (EADDRINUSE). Such a node is left at Port==0 so the
 		// second pass assigns it a fresh, collision-free port.
-		if c.Mode == "multi-port" || c.Mode == "hybrid" {
+		if ModeDualStack == "multi-port" || ModeDualStack == "hybrid" {
 			nodeKey := c.Nodes[idx].NodeKey()
 			if existingPort, ok := portMap[nodeKey]; ok && existingPort > 0 {
 				if usedPorts[existingPort] {
@@ -886,7 +939,7 @@ func (c *Config) NormalizeWithPortMap(portMap map[string]uint16) error {
 	// Reserve every saved assignment before accepting new explicit ports. A new
 	// node appearing earlier in a subscription must not steal an existing node's
 	// stable port; reject the conflict regardless of input order instead.
-	if c.Mode == "multi-port" || c.Mode == "hybrid" {
+	if ModeDualStack == "multi-port" || ModeDualStack == "hybrid" {
 		for idx := range c.Nodes {
 			if preservedNodePorts[idx] || c.Nodes[idx].Port == 0 {
 				continue
@@ -904,7 +957,7 @@ func (c *Config) NormalizeWithPortMap(portMap map[string]uint16) error {
 	portCursor := int(c.MultiPort.BasePort)
 	newPorts := 0
 	for idx := range c.Nodes {
-		if c.Nodes[idx].Port == 0 && (c.Mode == "multi-port" || c.Mode == "hybrid") {
+		if c.Nodes[idx].Port == 0 && (ModeDualStack == "multi-port" || ModeDualStack == "hybrid") {
 			// Check before conversion: 65536 must not wrap to an ephemeral port.
 			if portCursor > 65535 {
 				return fmt.Errorf("no available ports found starting from %d", c.MultiPort.BasePort)
@@ -926,14 +979,14 @@ func (c *Config) NormalizeWithPortMap(portMap map[string]uint16) error {
 		}
 
 		// Apply default credentials
-		if c.Mode == "multi-port" || c.Mode == "hybrid" {
+		if ModeDualStack == "multi-port" || ModeDualStack == "hybrid" {
 			if c.Nodes[idx].Username == "" {
 				c.Nodes[idx].Username = c.MultiPort.Username
 				c.Nodes[idx].Password = c.MultiPort.Password
 			}
 		}
 	}
-	if c.Mode == "multi-port" || c.Mode == "hybrid" {
+	if ModeDualStack == "multi-port" || ModeDualStack == "hybrid" {
 		log.Printf("✅ Port normalization complete: preserved=%d, new=%d, duplicate_identity_conflicts=%d, total_nodes=%d",
 			preservedPorts, newPorts, duplicatePortHits, len(c.Nodes))
 	}
@@ -966,8 +1019,8 @@ func (c *Config) normalizeSticky() error {
 	if !c.Sticky.Enabled {
 		return nil
 	}
-	if c.Mode != "pool" && c.Mode != "hybrid" {
-		log.Printf("⚠️  sticky.enabled is set but mode is %q; sticky only applies to pool/hybrid mode, disabling", c.Mode)
+	if ModeDualStack != "pool" && ModeDualStack != "hybrid" {
+		log.Printf("⚠️  sticky.enabled is set but mode is %q; sticky only applies to pool/hybrid mode, disabling", ModeDualStack)
 		c.Sticky.Enabled = false
 		return nil
 	}
@@ -2091,7 +2144,7 @@ func (c *Config) Save() error {
 // deliberately are not read or copied.
 func (c *Config) SettingsSnapshot() Config {
 	return Config{
-		Mode: c.Mode, Listener: c.Listener, MultiPort: c.MultiPort, Pool: c.Pool,
+		Listener: c.Listener, MultiPort: c.MultiPort, Pool: c.Pool,
 		Sticky: c.Sticky, Management: c.Management, ExternalIP: c.ExternalIP,
 		SkipCertVerify: c.SkipCertVerify, Log: c.Log, GeoIP: c.GeoIP,
 		filePath: c.filePath,
@@ -2141,7 +2194,6 @@ func (c *Config) saveSettings(includeSubscriptions bool) error {
 			saveCfg.SubscriptionRefresh = c.SubscriptionRefresh
 		}
 		saveCfg.GeoIP = c.GeoIP
-		saveCfg.Mode = c.Mode
 		saveCfg.Listener = c.Listener
 		saveCfg.MultiPort = c.MultiPort
 		saveCfg.Pool = c.Pool

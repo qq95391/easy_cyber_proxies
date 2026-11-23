@@ -41,7 +41,7 @@ func proxySessionAvailability(cfg *config.Config) (bool, string) {
 	if cfg == nil {
 		return false, "配置存储未初始化"
 	}
-	if cfg.Mode != "" && cfg.Mode != "pool" && cfg.Mode != "hybrid" {
+	if config.ModeDualStack != "" && config.ModeDualStack != "pool" && config.ModeDualStack != "hybrid" {
 		return false, "会话路由需要 pool 或 hybrid 模式"
 	}
 	if !cfg.Sticky.SessionRoutingEnabled() {
@@ -171,7 +171,7 @@ func (s *Server) handleProxySessionLinks(w http.ResponseWriter, r *http.Request)
 		writeStatusJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "配置存储未初始化"})
 		return
 	}
-	if cfg.Mode != "" && cfg.Mode != "pool" && cfg.Mode != "hybrid" {
+	if config.ModeDualStack != "" && config.ModeDualStack != "pool" && config.ModeDualStack != "hybrid" {
 		writeStatusJSON(w, http.StatusConflict, map[string]any{"error": "当前模式没有共享代理入口，请使用 pool 或 hybrid 模式"})
 		return
 	}

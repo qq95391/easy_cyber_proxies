@@ -143,7 +143,6 @@ func TestSaveNodePortMap_RoundTrip(t *testing.T) {
 	cfgPath := filepath.Join(dir, "config.yaml")
 
 	cfg := &Config{
-		Mode:      "multi-port",
 		MultiPort: MultiPortConfig{Address: "127.0.0.1", BasePort: 24000},
 		Nodes: []NodeConfig{
 			{URI: "vless://uuid-a@a.example.com:443#A", Port: 24000},

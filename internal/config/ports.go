@@ -7,7 +7,7 @@ import (
 
 func (c *Config) reservedListenerPorts() map[uint16]bool {
 	ports := make(map[uint16]bool)
-	if c.Mode == "pool" || c.Mode == "hybrid" {
+	if ModeDualStack == "pool" || ModeDualStack == "hybrid" {
 		ports[c.Listener.Port] = true
 		if c.Sticky.Enabled {
 			port := c.Sticky.Port

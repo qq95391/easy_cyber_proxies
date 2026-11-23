@@ -37,7 +37,6 @@ func newProxySessionTestServer(t *testing.T, cfg *config.Config) (*Server, *rout
 
 func proxySessionTestConfig() *config.Config {
 	return &config.Config{
-		Mode: "pool",
 		Listener: config.ListenerConfig{
 			Address: "0.0.0.0", Port: 2323, Username: "wang", Password: "1234",
 		},
@@ -164,11 +163,11 @@ func TestProxySessionLinkValidation(t *testing.T) {
 }
 
 func TestProxySessionLinksAvailability(t *testing.T) {
-	for _, mode := range []string{"pool", "hybrid", "multi-port"} {
+	for _, mode := range []string{"hybrid"} {
 		for _, disabled := range []bool{false, true} {
 			for _, username := range []string{"wang", ""} {
 				cfg := proxySessionTestConfig()
-				cfg.Mode, cfg.Listener.Username = mode, username
+				cfg.Listener.Username = username
 				enabled := !disabled
 				cfg.Sticky.SessionEnabled = &enabled
 				s, _ := newProxySessionTestServer(t, cfg)
@@ -189,7 +188,6 @@ func TestProxySessionLinksAvailability(t *testing.T) {
 	}
 	// Hybrid links use pool credentials, not the separate per-node account.
 	cfg := proxySessionTestConfig()
-	cfg.Mode = "hybrid"
 	cfg.MultiPort.Username, cfg.MultiPort.Password = "node-user", "node-password"
 	s, _ := newProxySessionTestServer(t, cfg)
 	w := proxyAPIRequest(t, s, http.MethodPost, "/api/proxy-sessions/links", `{"session_id":"one"}`)

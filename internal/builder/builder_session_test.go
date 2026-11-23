@@ -18,7 +18,6 @@ func TestPrintedProxyLinksMaskPasswords(t *testing.T) {
 	log.SetOutput(&output)
 	t.Cleanup(func() { log.SetOutput(previous) })
 	printProxyLinks(&config.Config{
-		Mode:      "hybrid",
 		Listener:  config.ListenerConfig{Address: "::", Port: 2323, Username: "wang", Password: "sensitive-pool-password"},
 		MultiPort: config.MultiPortConfig{Address: "::1", Username: "node", Password: "sensitive-multi-password"},
 		Nodes:     []config.NodeConfig{{Name: "one", Port: 24000, Username: "direct", Password: "sensitive-node-password"}},
@@ -48,7 +47,7 @@ func TestBuildSessionRoutingMainEntry(t *testing.T) {
 		{name: "explicitly disabled", username: "wang", disabled: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := &config.Config{Mode: "pool", Listener: config.ListenerConfig{Address: "127.0.0.1", Port: 2323, Username: tc.username, Password: "secret"}, Nodes: []config.NodeConfig{{Name: "one", URI: "http://127.0.0.1:8080"}}}
+			cfg := &config.Config{Listener: config.ListenerConfig{Address: "127.0.0.1", Port: 2323, Username: tc.username, Password: "secret"}, Nodes: []config.NodeConfig{{Name: "one", URI: "http://127.0.0.1:8080"}}}
 			if tc.disabled {
 				enabled := false
 				cfg.Sticky.SessionEnabled = &enabled
@@ -79,8 +78,18 @@ func TestBuildSessionRoutingMainEntry(t *testing.T) {
 					}
 				}
 			}
-			if tc.legacy && (len(opts.Inbounds) != 2 || opts.Inbounds[1].Type != C.TypeMixed || opts.Inbounds[1].Tag != "sticky-in") {
-				t.Fatal("legacy entry compatibility lost")
+			if tc.legacy {
+				// Dual-stack always adds per-node listeners, so count alone is not
+				// the contract; the sticky entry must still exist.
+				stickyFound := false
+				for _, in := range opts.Inbounds {
+					if in.Tag == "sticky-in" && in.Type == C.TypeMixed {
+						stickyFound = true
+					}
+				}
+				if !stickyFound {
+					t.Fatal("legacy entry compatibility lost")
+				}
 			}
 		})
 	}
@@ -89,7 +98,6 @@ func TestBuildSessionRoutingMainEntry(t *testing.T) {
 func TestBuildClashAPIRequiresFeatureAndManagement(t *testing.T) {
 	for _, enabled := range []bool{true, false} {
 		cfg := &config.Config{
-			Mode:       "pool",
 			Listener:   config.ListenerConfig{Address: "127.0.0.1", Port: 2323},
 			Management: config.ManagementConfig{Enabled: &enabled},
 			Nodes:      []config.NodeConfig{{Name: "one", URI: "http://127.0.0.1:8080"}},

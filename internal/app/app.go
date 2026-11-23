@@ -9,10 +9,13 @@ import (
 	"syscall"
 	"time"
 
+	"easy_proxies/internal/accounts"
 	"easy_proxies/internal/boxmgr"
 	"easy_proxies/internal/config"
 	"easy_proxies/internal/ext"
+	"easy_proxies/internal/logs"
 	"easy_proxies/internal/monitor"
+	"easy_proxies/internal/quality"
 	"easy_proxies/internal/subscription"
 )
 
@@ -24,6 +27,15 @@ func Run(ctx context.Context, cfg *config.Config) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	// Structured log detail follows the configured log level. DEBUG enables
+	// per-node verification detail; INFO keeps only bounded aggregates.
+	logs.Default().SetMinLevel(logs.ParseLevel(cfg.LogLevel))
+	// Strict-verification results survive restarts; a missing sidecar is normal.
+	if path := cfg.NodeQualityPath(); path != "" {
+		if err := quality.Default().Load(path); err != nil {
+			fmt.Printf("[quality] load failed: %v\n", err)
+		}
+	}
 	// Build extension sources before the first sing-box build so freshly
 	// collected nodes are included in the initial runtime configuration.
 	extMgr := ext.New(cfg)
@@ -34,10 +46,18 @@ func Run(ctx context.Context, cfg *config.Config) error {
 			cfg.Nodes = append(cfg.Nodes, extNodes...)
 		}
 	}
+	// Load independent accounts before the first sing-box build so their pool
+	// rules are part of the initial routing snapshot.
+	if store, err := accounts.Load(cfg.AccountsPath()); err != nil {
+		fmt.Printf("[accounts] load failed: %v\n", err)
+	} else {
+		accounts.SetDefault(store)
+	}
+
 	// Build monitor config
 	proxyUsername := cfg.Listener.Username
 	proxyPassword := cfg.Listener.Password
-	if cfg.Mode == "multi-port" || cfg.Mode == "hybrid" {
+	if config.ModeDualStack == "multi-port" || config.ModeDualStack == "hybrid" {
 		proxyUsername = cfg.MultiPort.Username
 		proxyPassword = cfg.MultiPort.Password
 	}

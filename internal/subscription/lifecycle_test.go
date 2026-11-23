@@ -49,7 +49,7 @@ func testManager(t *testing.T, urls []string, enabled bool) (*Manager, *fakeRunt
 	t.Helper()
 	dir := t.TempDir()
 	cfg := &config.Config{
-		Mode: "pool", Subscriptions: urls, NodesFile: filepath.Join(dir, "nodes.txt"),
+		Subscriptions: urls, NodesFile: filepath.Join(dir, "nodes.txt"),
 		Listener: config.ListenerConfig{Username: "before"},
 		SubscriptionRefresh: config.SubscriptionRefreshConfig{
 			Enabled: enabled, Interval: time.Hour, Timeout: time.Second,
@@ -454,7 +454,7 @@ func TestEmptySubscriptionsFailFastAndSaveFailureDoesNotPublish(t *testing.T) {
 
 func TestCreateNewConfigDoesNotMutateCallerNodes(t *testing.T) {
 	input := []config.NodeConfig{{Name: " subscribed ", URI: "trojan://pw@new.example:443", Source: config.NodeSourceFile}}
-	mgr := &Manager{baseCfg: &config.Config{Mode: "pool"}}
+	mgr := &Manager{baseCfg: &config.Config{}}
 	cfg := mgr.createNewConfig(input)
 	if input[0].Source != config.NodeSourceFile || input[0].Name != " subscribed " {
 		t.Fatal("building refresh config modified the input slice")

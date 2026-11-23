@@ -161,7 +161,9 @@ func (r *Registry) Collect(ctx context.Context, concurrency int, allow func(Prov
 	deduped := make([]config.NodeConfig, 0, len(merged))
 	for i := range merged {
 		n := merged[i]
-		key := n.NodeKey()
+		// Endpoint+protocol identity: the same host:port via different display
+		// names collapses, while different protocols on one port are preserved.
+		key := config.DedupeKey(n.URI)
 		if key == "" || seen[key] {
 			continue
 		}

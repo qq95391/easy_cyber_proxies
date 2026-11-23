@@ -9,11 +9,11 @@ import (
 
 func TestExtTagKeyMatchesBuilderSanitize(t *testing.T) {
 	cases := map[string]string{
-		"HK-01 Node":     "hk-01-node",
-		"机场 节点/01":       "01",
-		"  Mix_Case  ":   "mix-case",
-		"":               "",
-		"!!!":            "",
+		"HK-01 Node":   "hk-01-node",
+		"机场 节点/01":     "01",
+		"  Mix_Case  ": "mix-case",
+		"":             "",
+		"!!!":          "",
 	}
 	for in, want := range cases {
 		if got := tagKey(in); got != want {

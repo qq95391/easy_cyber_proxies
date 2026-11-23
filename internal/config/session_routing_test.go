@@ -25,7 +25,7 @@ func TestSessionRoutingDefaultsAndValidation(t *testing.T) {
 		{name: "excessive capacity", max: MaxSessionCapacity + 1, wantErr: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := &Config{Mode: "pool", Sticky: StickyConfig{SessionTTL: tc.ttl, MaxSessions: tc.max}}
+			cfg := &Config{Sticky: StickyConfig{SessionTTL: tc.ttl, MaxSessions: tc.max}}
 			err := cfg.normalizeSticky()
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("normalizeSticky error = %v, wantErr %v", err, tc.wantErr)
@@ -54,7 +54,7 @@ func TestSaveSettingsPersistsStickyRouting(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, enabled := range []bool{false, true} {
-		cfg := &Config{Mode: "pool", Sticky: StickyConfig{
+		cfg := &Config{Sticky: StickyConfig{
 			Enabled: true, Port: 2324, SessionEnabled: &enabled, SessionTTL: 2 * time.Hour, MaxSessions: 321,
 		}}
 		cfg.SetFilePath(path)

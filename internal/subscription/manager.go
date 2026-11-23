@@ -428,6 +428,14 @@ func (m *Manager) doRefresh(cfg *config.Config, version uint64) error {
 	if m.boxMgr == nil {
 		return errors.New("proxy runtime is not initialized")
 	}
+	// An unchanged subscription result must not rebuild the core: every reload
+	// closes existing connections. Still refresh the baseline so the next
+	// changed result is detected correctly.
+	if m.unchangedNodes(nodes, cfg, startingConfig) {
+		m.logger.Infof("subscription nodes unchanged; skipping core reload to keep active connections")
+		m.recordRefresh(nodesFilePath(m.baseCfg), nodes)
+		return nil
+	}
 
 	var nodesFile string
 	if runtime, ok := m.boxMgr.(transactionalRuntime); ok {
@@ -489,6 +497,23 @@ func (m *Manager) doRefresh(cfg *config.Config, version uint64) error {
 	}
 	m.recordRefresh(nodesFile, nodes)
 	return nil
+}
+
+// unchangedNodes reports whether a refresh produced exactly the same node
+// set and the same subscription settings as the running core. In that case
+// rebuilding the core would only tear down live connections for no benefit.
+func (m *Manager) unchangedNodes(nodes []config.NodeConfig, cfg, starting *config.Config) bool {
+	if starting == nil || !sameSubscriptionConfig(starting, cfg) {
+		return false
+	}
+	m.mu.RLock()
+	lastHash := m.lastSubHash
+	modified := m.status.NodesModified
+	m.mu.RUnlock()
+	if lastHash == "" || modified {
+		return false
+	}
+	return m.computeNodesHash(nodes) == lastHash
 }
 
 func sameSubscriptionConfig(a, b *config.Config) bool {

@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"easy_proxies/internal/config"
+	"easy_proxies/internal/logs"
 	"easy_proxies/internal/source"
 	"easy_proxies/internal/verify"
 )
@@ -255,7 +256,8 @@ func (o *Orchestrator) refresh(ctx context.Context, filter func(source.Provider)
 	p := o.parts()
 	concurrency := config.ClampInt(p.ext.FreePool.Concurrency, 4, 1, 32)
 	collection := p.registry.Collect(ctx, concurrency, filter)
-	admitted := o.verifyAndFilter(ctx, collection.Nodes, p.verifier, p.ext)
+	admitted, reasons := o.verifyAndFilter(ctx, collection.Nodes, p.verifier, p.ext)
+	o.logRefreshSummary(collection, admitted, reasons)
 	if err := o.saveCache(admitted); err != nil {
 		log.Printf("[extension] cache write: %v", err)
 	}
@@ -306,7 +308,7 @@ func (o *Orchestrator) recheck(ctx context.Context) {
 	if len(nodes) == 0 {
 		return
 	}
-	admitted := o.verifyAndFilter(ctx, nodes, p.verifier, p.ext)
+	admitted, _ := o.verifyAndFilter(ctx, nodes, p.verifier, p.ext)
 	_ = o.saveCache(admitted)
 	o.mu.Lock()
 	o.admitted = append([]config.NodeConfig(nil), admitted...)
@@ -318,9 +320,10 @@ func (o *Orchestrator) recheck(ctx context.Context) {
 	}
 }
 
-func (o *Orchestrator) verifyAndFilter(ctx context.Context, nodes []config.NodeConfig, ver *verify.Verifier, ext config.ExtensionConfig) []config.NodeConfig {
+func (o *Orchestrator) verifyAndFilter(ctx context.Context, nodes []config.NodeConfig, ver *verify.Verifier, ext config.ExtensionConfig) ([]config.NodeConfig, map[string]int) {
+	reasons := make(map[string]int)
 	if !ext.Verification.Enabled {
-		return append([]config.NodeConfig(nil), nodes...)
+		return append([]config.NodeConfig(nil), nodes...), reasons
 	}
 	portMap := map[string]uint16{}
 	o.mu.RLock()
@@ -365,6 +368,20 @@ func (o *Orchestrator) verifyAndFilter(ctx context.Context, nodes []config.NodeC
 		if j.res.MITMSuspected && actionRejects(mitmCfg.Action) {
 			pass = false
 		}
+		if !pass {
+			reason := classifyRejection(j.res, minScore, authCfg, mitmCfg)
+			reasons[reason]++
+			// Per-node detail stays DEBUG so the default threshold cannot flood
+			// the buffer; the INFO summary carries the aggregated distribution.
+			logs.Default().Add(logs.Entry{
+				Level: logs.LevelDebug, Category: "verify", Source: nodeSourceShort(j.node),
+				Message: fmt.Sprintf("rejected %s reason=%s", safeNodeName(j.node), reason),
+				Fields: map[string]any{
+					"reason": reason, "score": j.res.Score, "min_score": minScore,
+					"reachable": j.res.Reachable, "mitm": j.res.MITMSuspected, "genuine": j.res.Genuine,
+				},
+			})
+		}
 		o.mu.Lock()
 		o.results[key] = j.res
 		if pass {
@@ -378,7 +395,128 @@ func (o *Orchestrator) verifyAndFilter(ctx context.Context, nodes []config.NodeC
 		}
 		o.mu.Unlock()
 	}
-	return admitted
+	return admitted, reasons
+}
+
+func classifyRejection(res verify.Result, minScore int, authCfg config.AuthenticityConfig, mitmCfg config.MITMConfig) string {
+	switch {
+	case res.MITMSuspected && actionRejects(mitmCfg.Action):
+		return "mitm"
+	case res.Checks["genuine"] && !res.Genuine && actionRejects(authCfg.Action):
+		return "authenticity"
+	case !res.Reachable && isTimeoutText(res.Error):
+		return "timeout"
+	case !res.Reachable:
+		return "unreachable"
+	case res.Score < minScore:
+		return "score_below_min"
+	default:
+		return "other"
+	}
+}
+
+func isTimeoutText(message string) bool {
+	lower := strings.ToLower(message)
+	return strings.Contains(lower, "timeout") || strings.Contains(lower, "deadline")
+}
+
+func safeNodeName(n config.NodeConfig) string {
+	if n.Name != "" {
+		return n.Name
+	}
+	if n.SourceDetail != "" {
+		return n.SourceDetail
+	}
+	return string(n.Source)
+}
+
+// shortSource maps provider names to compact labels used in log summaries.
+func shortSource(provider string) string {
+	if strings.HasPrefix(provider, "mapping:") {
+		return strings.TrimPrefix(provider, "mapping:")
+	}
+	if provider == "freepool" || strings.HasPrefix(provider, "external:") {
+		return "free"
+	}
+	return provider
+}
+
+func nodeSourceShort(n config.NodeConfig) string {
+	detail := strings.ToLower(n.SourceDetail)
+	for _, name := range []string{"fofa", "hunter", "quake"} {
+		if strings.Contains(detail, name) {
+			return name
+		}
+	}
+	switch n.Source {
+	case config.NodeSourceFreePool, config.NodeSourceExternalPool:
+		return "free"
+	case config.NodeSourceMapping:
+		return "mapping"
+	default:
+		return "other"
+	}
+}
+
+func joinCounts(counts map[string]int) string {
+	keys := make([]string, 0, len(counts))
+	for key := range counts {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, key+":"+strconv.Itoa(counts[key]))
+	}
+	return strings.Join(parts, ",")
+}
+
+// logRefreshSummary emits one bounded INFO line with per-source counts,
+// admitted distribution and aggregated rejection reasons, plus sanitized
+// provider errors as WARN entries.
+func (o *Orchestrator) logRefreshSummary(collection source.Collection, admitted []config.NodeConfig, reasons map[string]int) {
+	sources := make(map[string]int)
+	admittedBy := make(map[string]int)
+	rawTotal := 0
+	for _, out := range collection.Outcomes {
+		sources[shortSource(out.Provider)] += out.Nodes
+		rawTotal += out.Nodes
+		if out.Error != "" {
+			logs.Default().Add(logs.Entry{
+				Level: logs.LevelWarn, Category: "refresh", Source: shortSource(out.Provider),
+				Message: "provider failed: " + logs.SanitizeError(out.Error),
+			})
+		}
+	}
+	for _, n := range admitted {
+		admittedBy[nodeSourceShort(n)]++
+	}
+	deduped := rawTotal - len(collection.Nodes)
+	if deduped < 0 {
+		deduped = 0
+	}
+	if len(sources) == 0 {
+		sources["none"] = 0
+	}
+	if len(admittedBy) == 0 {
+		admittedBy["none"] = 0
+	}
+	if len(reasons) == 0 {
+		reasons["none"] = 0
+	}
+	sourceText := joinCounts(sources)
+	admittedText := joinCounts(admittedBy)
+	reasonText := joinCounts(reasons)
+	logs.Default().Add(logs.Entry{
+		Level: logs.LevelInfo, Category: "refresh",
+		Message: fmt.Sprintf("refresh done candidates=%d sources=%s admitted=%d admitted_by=%s deduped=%d rejected=%s",
+			len(collection.Nodes), sourceText, len(admitted), admittedText, deduped, reasonText),
+		Fields: map[string]any{
+			"candidates": len(collection.Nodes), "sources": sourceText,
+			"admitted": len(admitted), "admitted_by": admittedText,
+			"deduped": deduped, "reasons": reasonText,
+		},
+	})
 }
 
 // localURLFor maps a node to its landed local mixed port when the upstream
@@ -443,7 +581,42 @@ func (o *Orchestrator) applyToRuntime(runtime Runtime, admitted []config.NodeCon
 		return errors.New("refusing to publish an empty node set")
 	}
 	candidate.Nodes = base
+	// Rechecks usually produce the same node set. Rebuilding the core tears
+	// down every live connection, so skip it when the effective nodes are
+	// unchanged; only quality/cache data needs refreshing.
+	if sameNodeSet(current.Nodes, candidate.Nodes) {
+		log.Printf("[extension] node set unchanged; skipping core reload to keep active connections")
+		return nil
+	}
 	return runtime.ReloadWithPortMap(&candidate, runtime.CurrentPortMap())
+}
+
+// sameNodeSet compares the effective node identities (endpoint + protocol +
+// credentials), ignoring order and display names. Credential rotation must
+// still trigger a reload, so this uses NodeKey rather than DedupeKey.
+func sameNodeSet(a, b []config.NodeConfig) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := make(map[string]int, len(a))
+	for _, n := range a {
+		seen[nodeIdentity(n)]++
+	}
+	for _, n := range b {
+		key := nodeIdentity(n)
+		if seen[key] == 0 {
+			return false
+		}
+		seen[key]--
+	}
+	return true
+}
+
+func nodeIdentity(n config.NodeConfig) string {
+	if key := n.NodeKey(); key != "" {
+		return key
+	}
+	return config.DedupeKey(n.URI)
 }
 
 func (o *Orchestrator) saveCache(nodes []config.NodeConfig) error {
@@ -597,9 +770,9 @@ func (o *Orchestrator) Sources() []map[string]any {
 		list = append(list, map[string]any{
 			"kind": "preset", "name": pr.Platform,
 			"enabled": p.ext.Mapping.Enabled && pr.Enabled,
-			"target": pr.Platform, "query": pr.Query, "key_env": pr.KeyEnv,
-			"nodes": byName["mapping:"+pr.Platform].Nodes,
-			"error": byName["mapping:"+pr.Platform].Error,
+			"target":  pr.Platform, "query": pr.Query, "key_env": pr.KeyEnv,
+			"nodes":      byName["mapping:"+pr.Platform].Nodes,
+			"error":      byName["mapping:"+pr.Platform].Error,
 			"fetched_at": byName["mapping:"+pr.Platform].FetchedAt,
 		})
 	}
@@ -608,7 +781,7 @@ func (o *Orchestrator) Sources() []map[string]any {
 		list = append(list, map[string]any{
 			"kind": "mapping", "name": pr.Name,
 			"enabled": p.ext.Mapping.Enabled && pr.Enabled,
-			"target": pr.Endpoint, "query": pr.Query,
+			"target":  pr.Endpoint, "query": pr.Query,
 			"key_env": pr.Auth.KeyEnv, "nodes": oc.Nodes,
 			"error": oc.Error, "fetched_at": oc.FetchedAt,
 		})
@@ -617,7 +790,7 @@ func (o *Orchestrator) Sources() []map[string]any {
 		list = append(list, map[string]any{
 			"kind": "freepool", "name": f.Name,
 			"enabled": p.ext.FreePool.Enabled && f.Enabled,
-			"target": f.URL, "nodes": aggregate.Nodes,
+			"target":  f.URL, "nodes": aggregate.Nodes,
 			"error": aggregate.Error, "fetched_at": aggregate.FetchedAt,
 		})
 	}
@@ -863,8 +1036,8 @@ func (o *Orchestrator) Access() map[string]any {
 		items = append(items, map[string]any{
 			"name": n.Name, "port": port, "source": string(n.Source),
 			"grade": grade, "score": score,
-			"http_url":   "http://" + auth + addr,
-			"socks5_url": "socks5://" + auth + addr,
+			"http_url":      "http://" + auth + addr,
+			"socks5_url":    "socks5://" + auth + addr,
 			"masked_http":   "http://" + maskedAuth + addr,
 			"masked_socks5": "socks5://" + maskedAuth + addr,
 		})

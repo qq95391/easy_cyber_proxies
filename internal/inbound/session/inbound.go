@@ -9,6 +9,7 @@ import (
 	"net"
 	"time"
 
+	"easy_proxies/internal/accounts"
 	"easy_proxies/internal/routing"
 
 	"github.com/sagernet/sing-box/adapter"
@@ -135,6 +136,17 @@ func (h *Inbound) newConnection(ctx context.Context, conn net.Conn, metadata ada
 }
 
 func (h *Inbound) authenticate(ctx context.Context, username, password string) (context.Context, bool) {
+	// Independent accounts take precedence and are hot-swappable: the store
+	// publishes a new snapshot on every CRUD without rebuilding this inbound.
+	if session, ok := accounts.Default().Authenticate(username, password, h.sessionEnabled); ok {
+		if session != "" {
+			ctx = routing.WithSession(ctx, username)
+		} else {
+			ctx = routing.WithSession(ctx, "")
+		}
+		return auth.ContextWithUser(ctx, username), true
+	}
+	// Legacy single listener credentials remain valid during migration.
 	// Exact accounts take precedence over suffix parsing if multiple users have
 	// overlapping names, e.g. "wang" and "wang.name".
 	exactMatch := false

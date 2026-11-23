@@ -195,7 +195,7 @@ func (m *Manager) Start(ctx context.Context) (err error) {
 	}
 	m.mu.Unlock()
 	if startHealthCheck {
-		manager.StartPeriodicHealthCheck(periodicHealthInterval, periodicHealthTimeout)
+		manager.StartPeriodicHealthCheck(cfg.Pool.HealthIntervalOrDefault(), periodicHealthTimeout)
 	}
 	if cfg.SubscriptionRefresh.MinAvailableNodes > 0 {
 		timeout := cfg.SubscriptionRefresh.HealthCheckTimeout
@@ -1195,7 +1195,7 @@ func extractPortFromBindError(err error) uint16 {
 func reassignConflictingPort(cfg *config.Config, conflictPort uint16) bool {
 	// Build set of used ports
 	usedPorts := make(map[uint16]bool)
-	if cfg.Mode == "hybrid" {
+	if config.ModeDualStack == "hybrid" {
 		usedPorts[cfg.Listener.Port] = true
 	}
 	if cfg.Sticky.Enabled {
@@ -1363,7 +1363,7 @@ func (m *Manager) prepareNodeLocked(node config.NodeConfig, currentName string) 
 	}
 
 	// Handle multi-port mode specifics
-	if m.cfg.Mode == "multi-port" {
+	if config.ModeDualStack == "multi-port" {
 		if node.Port == 0 {
 			node.Port = m.nextAvailablePortLocked()
 		} else if m.portInUseLocked(node.Port, currentName) {

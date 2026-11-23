@@ -16,16 +16,14 @@ func mustJSON(t *testing.T, v any) []byte {
 	return data
 }
 
-// TestNormalizeWithPortMap_DuplicateIdentityNoPortCollision proves that two
-// distinct nodes which collapse to the same stable key (e.g. a subscription
-// listing the same server twice under different display names) do NOT both get
-// assigned the same preserved port — which would bind the same proxy port twice
-// (EADDRINUSE). The first keeps the preserved port; the second gets a fresh one.
-func TestNormalizeWithPortMap_DuplicateIdentityNoPortCollision(t *testing.T) {
+// TestNormalizeWithPortMap_DuplicateEndpointIsDeduped proves that two nodes
+// sharing the same endpoint+protocol (e.g. a subscription listing the same
+// server twice under different display names) collapse into one entry before
+// port assignment, so the preserved port is kept exactly once.
+func TestNormalizeWithPortMap_DuplicateEndpointIsDeduped(t *testing.T) {
 	const dupURI = "vless://uuid-a@a.example.com:443?type=ws&security=tls"
 
 	cfg := &Config{
-		Mode:      "multi-port",
 		MultiPort: MultiPortConfig{Address: "127.0.0.1", BasePort: 24000},
 		Nodes: []NodeConfig{
 			{URI: dupURI + "#NodeA-1"},
@@ -40,15 +38,11 @@ func TestNormalizeWithPortMap_DuplicateIdentityNoPortCollision(t *testing.T) {
 		t.Fatalf("normalize: %v", err)
 	}
 
-	p0, p1 := cfg.Nodes[0].Port, cfg.Nodes[1].Port
-	if p0 == 0 || p1 == 0 {
-		t.Fatalf("expected non-zero ports, got %d and %d", p0, p1)
+	if len(cfg.Nodes) != 1 {
+		t.Fatalf("duplicate endpoints must be deduped, got %d node(s)", len(cfg.Nodes))
 	}
-	if p0 == p1 {
-		t.Fatalf("duplicate-identity nodes must not share a port, both got %d", p0)
-	}
-	if p0 != 24000 {
-		t.Errorf("first node should keep preserved port 24000, got %d", p0)
+	if cfg.Nodes[0].Port != 24000 {
+		t.Errorf("deduped node should keep preserved port 24000, got %d", cfg.Nodes[0].Port)
 	}
 }
 
@@ -78,7 +72,6 @@ management:
 	// Simulate a legacy sidecar: keyed by the RAW full URI (old NodeKey()).
 	legacy := map[string]uint16{uriA: 24050, uriB: 24051}
 	cfgForSave := &Config{
-		Mode:      "multi-port",
 		MultiPort: MultiPortConfig{Address: "127.0.0.1", BasePort: 24000},
 		Nodes: []NodeConfig{
 			{URI: uriA, Port: legacy[uriA]},

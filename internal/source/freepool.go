@@ -157,7 +157,7 @@ func (p *FreePoolProvider) Fetch(ctx context.Context) ([]config.NodeConfig, erro
 			}
 			uri := buildProxyURI(allowedProtocol(proto, fallback), host, port, user, pass)
 			label := safeLabel(fmt.Sprintf("%s-%s-%d", res.name, host, port))
-			key := uri
+			key := config.DedupeKey(uri)
 			if key == "" || seen[key] {
 				continue
 			}

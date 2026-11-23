@@ -24,6 +24,9 @@ import (
 
 	"easy_proxies/internal/config"
 	"easy_proxies/internal/geoip"
+	"easy_proxies/internal/logs"
+	"easy_proxies/internal/metrics"
+	"easy_proxies/internal/quality"
 	"easy_proxies/internal/routing"
 )
 
@@ -150,6 +153,10 @@ func NewServer(cfg Config, mgr *Manager, logger *log.Logger) *Server {
 	mux.HandleFunc("/api/nodes", s.withAuth(s.handleNodes))
 	mux.HandleFunc("/api/nodes/config", s.withAuth(s.handleConfigNodes))
 	mux.HandleFunc("/api/nodes/config/", s.withAuth(s.handleConfigNodeItem))
+	mux.HandleFunc("/api/nodes/quality", s.withAuth(s.handleNodeQuality))
+	mux.HandleFunc("/api/nodes/verify", s.withAuth(s.handleVerifyNodes))
+	mux.HandleFunc("/api/nodes/preview", s.withAuth(s.handleNodePreview))
+	mux.HandleFunc("/api/nodes/config/batch", s.withAuth(s.handleNodeBatch))
 	mux.HandleFunc("/api/nodes/probe-all", s.withAuth(s.handleProbeAll))
 	mux.HandleFunc("/api/nodes/", s.withAuth(s.handleNodeAction))
 	mux.HandleFunc("/api/debug", s.withAuth(s.handleDebug))
@@ -162,6 +169,13 @@ func NewServer(cfg Config, mgr *Manager, logger *log.Logger) *Server {
 	mux.HandleFunc("/api/logs", s.withAuth(s.handleLogs))
 	mux.HandleFunc("/api/ext/", s.withAuth(s.handleExtension))
 	mux.HandleFunc("/api/pool/user-pools", s.withAuth(s.handleUserPools))
+	mux.HandleFunc("/api/accounts", s.withAuth(s.handleAccounts))
+	mux.HandleFunc("/api/accounts/", s.withAuth(s.handleAccounts))
+	mux.HandleFunc("/api/metrics", s.withAuth(s.handleMetrics))
+	mux.HandleFunc("/api/metrics/stream", s.withAuth(s.handleMetricsStream))
+	mux.Handle("/metrics", s.withAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		metrics.Default().Handler().ServeHTTP(w, r)
+	})))
 	s.srv = &http.Server{
 		Addr: cfg.Listen, Handler: mux,
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second,
@@ -250,7 +264,7 @@ func (s *Server) SetConfig(cfg *config.Config) {
 			s.mgr.SetProbeTarget(cfg.Management.ProbeTarget, cfg.SkipCertVerify)
 		}
 		// Sync proxy credentials based on mode
-		if cfg.Mode == "multi-port" || cfg.Mode == "hybrid" {
+		if config.ModeDualStack == "multi-port" || config.ModeDualStack == "hybrid" {
 			s.cfg.ProxyUsername = cfg.MultiPort.Username
 			s.cfg.ProxyPassword = cfg.MultiPort.Password
 		} else {
@@ -406,12 +420,18 @@ func (s *Server) handleDebug(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	snapshots := s.mgr.Snapshot()
+	qualityByName := make(map[string]quality.Record)
+	for _, record := range quality.Default().All() {
+		if record.Name != "" {
+			qualityByName[record.Name] = record
+		}
+	}
 	var totalCalls, totalSuccess int64
 	debugNodes := make([]map[string]any, 0, len(snapshots))
 	for _, snap := range snapshots {
 		totalCalls += snap.SuccessCount + int64(snap.FailureCount)
 		totalSuccess += snap.SuccessCount
-		debugNodes = append(debugNodes, map[string]any{
+		node := map[string]any{
 			"tag":                snap.Tag,
 			"name":               snap.Name,
 			"mode":               snap.Mode,
@@ -425,7 +445,11 @@ func (s *Server) handleDebug(w http.ResponseWriter, r *http.Request) {
 			"last_error":         snap.LastError,
 			"blacklisted":        snap.Blacklisted,
 			"timeline":           snap.Timeline,
-		})
+		}
+		if record, ok := qualityByName[snap.Name]; ok {
+			node["quality"] = record
+		}
+		debugNodes = append(debugNodes, node)
 	}
 	var successRate float64
 	if totalCalls > 0 {
@@ -884,7 +908,7 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 	var listenerCfg config.ListenerConfig
 	var geoipCfg config.GeoIPConfig
 	if s.cfgSrc != nil {
-		mode = s.cfgSrc.Mode
+		mode = config.ModeDualStack
 		externalIP = s.cfgSrc.ExternalIP
 		listenerCfg = s.cfgSrc.Listener
 		geoipCfg = s.cfgSrc.GeoIP
@@ -971,62 +995,22 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleSettings handles GET/PUT for dynamic settings (external_ip, probe_target, skip_cert_verify, log).
-// handleUserPools manages the username → node-subset bindings. Rules are
-// published to the routing store immediately, so no core reload is required.
+// handleUserPools is a read-only compatibility shim. The legacy config.yaml
+// user_pools writer is retired: accounts and pools are owned by the account
+// system (/api/accounts) and published through config.SetAccountPools.
 func (s *Server) handleUserPools(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		s.cfgMu.RLock()
-		var pools []config.UserPoolConfig
-		if s.cfgSrc != nil {
-			pools = config.NormalizeUserPools(s.cfgSrc.Pool.UserPools)
-		}
-		s.cfgMu.RUnlock()
-		writeJSON(w, map[string]any{"pools": pools})
+		writeJSON(w, map[string]any{
+			"pools":      []any{},
+			"deprecated": true,
+			"message":    "旧用户分池写入已停用，请在「用户与分池」页维护账号与分池",
+		})
 	case http.MethodPut:
-		if !sameOriginMutation(r) {
-			writeStatusJSON(w, http.StatusForbidden, map[string]any{"error": "跨站请求已拒绝"})
-			return
-		}
-		var req struct {
-			Pools []config.UserPoolConfig `json:"pools"`
-		}
-		if err := decodeManagementJSON(w, r, 1<<20, &req); err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			writeJSON(w, map[string]any{"error": "请求格式错误"})
-			return
-		}
-		pools := config.NormalizeUserPools(req.Pools)
-		seen := make(map[string]bool, len(pools))
-		for _, p := range pools {
-			if seen[p.Name] {
-				writeStatusJSON(w, http.StatusBadRequest, map[string]any{"error": "池名重复：" + p.Name})
-				return
-			}
-			seen[p.Name] = true
-		}
-		s.cfgMu.Lock()
-		if s.cfgSrc == nil {
-			s.cfgMu.Unlock()
-			writeStatusJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "配置存储未初始化"})
-			return
-		}
-		previous := s.cfgSrc.Pool.UserPools
-		candidate := s.cfgSrc.SettingsSnapshot()
-		candidate.Pool.UserPools = pools
-		err := candidate.SaveManagementSettings()
-		if err != nil {
-			s.cfgSrc.Pool.UserPools = previous
-		} else {
-			s.cfgSrc.Pool.UserPools = pools
-		}
-		s.cfgMu.Unlock()
-		if err != nil {
-			writeStatusJSON(w, http.StatusInternalServerError, map[string]any{"error": "保存失败：" + err.Error()})
-			return
-		}
-		config.SetUserPools(pools)
-		writeJSON(w, map[string]any{"message": "已保存并立即生效", "pools": pools})
+		writeStatusJSON(w, http.StatusGone, map[string]any{
+			"error":      "旧用户分池写入路径已停用，请在「用户与分池」页维护",
+			"deprecated": true,
+		})
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
@@ -1069,7 +1053,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			},
 		}
 		if cfg != nil {
-			resp["mode"] = cfg.Mode
+			resp["mode"] = config.ModeDualStack
 			resp["listener"] = map[string]any{
 				"address":  cfg.Listener.Address,
 				"port":     cfg.Listener.Port,
@@ -1083,12 +1067,17 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 				"password":  cfg.MultiPort.Password,
 			}
 			resp["pool"] = map[string]any{
-				"mode":                 cfg.Pool.Mode,
-				"failure_threshold":    cfg.Pool.FailureThreshold,
-				"blacklist_duration":   cfg.Pool.BlacklistDuration.String(),
-				"transient_cooldown":   cfg.Pool.TransientCooldown.String(),
-				"rate_limit_cooldown":  cfg.Pool.RateLimitCooldown.String(),
-				"blacklist_failed_pin": cfg.Pool.BlacklistFailedPinOrDefault(),
+				"mode":                   cfg.Pool.Mode,
+				"failure_threshold":      cfg.Pool.FailureThreshold,
+				"blacklist_duration":     cfg.Pool.BlacklistDuration.String(),
+				"transient_cooldown":     cfg.Pool.TransientCooldown.String(),
+				"rate_limit_cooldown":    cfg.Pool.RateLimitCooldown.String(),
+				"blacklist_failed_pin":   cfg.Pool.BlacklistFailedPinOrDefault(),
+				"switch_budget":          cfg.Pool.SwitchBudgetOrDefault().String(),
+				"dial_timeout":           cfg.Pool.DialTimeoutOrDefault().String(),
+				"health_interval":        cfg.Pool.HealthIntervalOrDefault().String(),
+				"fallback":               cfg.Pool.FallbackOrDefault(),
+				"enable_circuit_breaker": cfg.Pool.CircuitBreakerEnabled(),
 			}
 			resp["sticky"] = map[string]any{
 				"enabled":         cfg.Sticky.Enabled,
@@ -1131,12 +1120,17 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 				Password string `json:"password"`
 			} `json:"multi_port,omitempty"`
 			Pool *struct {
-				Mode               string `json:"mode"`
-				FailureThreshold   int    `json:"failure_threshold"`
-				BlacklistDuration  string `json:"blacklist_duration"`
-				TransientCooldown  string `json:"transient_cooldown"`
-				RateLimitCooldown  string `json:"rate_limit_cooldown"`
-				BlacklistFailedPin *bool  `json:"blacklist_failed_pin"`
+				Mode                 string  `json:"mode"`
+				FailureThreshold     int     `json:"failure_threshold"`
+				BlacklistDuration    string  `json:"blacklist_duration"`
+				TransientCooldown    string  `json:"transient_cooldown"`
+				RateLimitCooldown    string  `json:"rate_limit_cooldown"`
+				BlacklistFailedPin   *bool   `json:"blacklist_failed_pin"`
+				SwitchBudget         *string `json:"switch_budget,omitempty"`
+				DialTimeout          *string `json:"dial_timeout,omitempty"`
+				HealthInterval       *string `json:"health_interval,omitempty"`
+				Fallback             *string `json:"fallback,omitempty"`
+				EnableCircuitBreaker *bool   `json:"enable_circuit_breaker,omitempty"`
 			} `json:"pool,omitempty"`
 			Sticky *struct {
 				Enabled        *bool   `json:"enabled"`
@@ -1177,6 +1171,27 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 				struct{ name, value string }{"pool.blacklist_duration", req.Pool.BlacklistDuration},
 				struct{ name, value string }{"pool.transient_cooldown", req.Pool.TransientCooldown},
 				struct{ name, value string }{"pool.rate_limit_cooldown", req.Pool.RateLimitCooldown})
+			if req.Pool.SwitchBudget != nil {
+				durationInputs = append(durationInputs, struct{ name, value string }{"pool.switch_budget", *req.Pool.SwitchBudget})
+			}
+			if req.Pool.HealthInterval != nil {
+				durationInputs = append(durationInputs, struct{ name, value string }{"pool.health_interval", *req.Pool.HealthInterval})
+			}
+			// A zero/empty dial timeout intentionally disables the per-dial deadline.
+			if req.Pool.DialTimeout != nil && *req.Pool.DialTimeout != "" {
+				if d, err := time.ParseDuration(*req.Pool.DialTimeout); err != nil || d < 0 {
+					writeStatusJSON(w, http.StatusBadRequest, map[string]any{"error": "pool.dial_timeout 须为非负时间间隔"})
+					return
+				}
+			}
+			if req.Pool.Fallback != nil {
+				switch *req.Pool.Fallback {
+				case "none", "default_pool", "direct":
+				default:
+					writeStatusJSON(w, http.StatusBadRequest, map[string]any{"error": "pool.fallback 须为 none / default_pool / direct"})
+					return
+				}
+			}
 		}
 		for _, input := range durationInputs {
 			if input.value == "" {
@@ -1248,9 +1263,8 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		if req.SkipCertVerify != nil {
 			candidate.SkipCertVerify = *req.SkipCertVerify
 		}
-		if req.Mode != "" {
-			candidate.Mode = req.Mode
-		}
+		// Topology is fixed to dual-stack; legacy mode input is ignored so an
+		// old client cannot write a mode that normalize would only override.
 		if req.Listener != nil {
 			candidate.Listener.Address = req.Listener.Address
 			candidate.Listener.Port = req.Listener.Port
@@ -1281,6 +1295,28 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 			}
 			if d, err := time.ParseDuration(req.Pool.RateLimitCooldown); err == nil && d > 0 {
 				candidate.Pool.RateLimitCooldown = d
+			}
+			if req.Pool.SwitchBudget != nil {
+				if d, err := time.ParseDuration(*req.Pool.SwitchBudget); err == nil && d > 0 {
+					candidate.Pool.SwitchBudget = d
+				}
+			}
+			if req.Pool.DialTimeout != nil {
+				if d, err := time.ParseDuration(*req.Pool.DialTimeout); err == nil && d >= 0 {
+					candidate.Pool.DialTimeout = d
+				}
+			}
+			if req.Pool.HealthInterval != nil {
+				if d, err := time.ParseDuration(*req.Pool.HealthInterval); err == nil && d > 0 {
+					candidate.Pool.HealthInterval = d
+				}
+			}
+			if req.Pool.Fallback != nil {
+				candidate.Pool.Fallback = *req.Pool.Fallback
+			}
+			if req.Pool.EnableCircuitBreaker != nil {
+				value := *req.Pool.EnableCircuitBreaker
+				candidate.Pool.EnableCircuitBreaker = &value
 			}
 		}
 		if req.Sticky != nil {
@@ -1353,7 +1389,6 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		s.cfgSrc.SkipCertVerify = candidate.SkipCertVerify
 		s.cfgSrc.Log = candidate.Log
 		s.cfgSrc.GeoIP = candidate.GeoIP
-		s.cfgSrc.Mode = candidate.Mode
 		s.cfgSrc.Listener = candidate.Listener
 		s.cfgSrc.MultiPort = candidate.MultiPort
 		s.cfgSrc.Pool = candidate.Pool
@@ -1762,8 +1797,27 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	content := SharedLogBuffer.Content()
-	writeJSON(w, map[string]any{"logs": content})
+	query := r.URL.Query()
+	minLevel := logs.LevelDebug
+	if raw := strings.TrimSpace(query.Get("level")); raw != "" && !strings.EqualFold(raw, "all") {
+		minLevel = logs.ParseLevel(raw)
+	}
+	category := strings.TrimSpace(query.Get("category"))
+	if category == "" {
+		category = "all"
+	}
+	limit := 200
+	if parsed, err := strconv.Atoi(query.Get("limit")); err == nil && parsed > 0 && parsed <= 1000 {
+		limit = parsed
+	}
+	entries := logs.Default().Query(minLevel, category, query.Get("q"), limit)
+	writeJSON(w, map[string]any{
+		"logs":       SharedLogBuffer.Content(),
+		"entries":    entries,
+		"total":      len(entries),
+		"min_level":  string(logs.Default().MinLevel()),
+		"categories": []string{"all", "refresh", "verify", "access", "reroute", "circuit"},
+	})
 }
 
 // Session management functions

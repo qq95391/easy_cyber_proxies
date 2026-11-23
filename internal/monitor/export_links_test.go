@@ -41,7 +41,6 @@ func TestExportLinksHybridCredentialsAndDeduplication(t *testing.T) {
 	for _, scheme := range []string{"http", "socks5", "all"} {
 		t.Run(scheme, func(t *testing.T) {
 			cfg := proxySessionTestConfig()
-			cfg.Mode = "hybrid"
 			cfg.Listener.Username, cfg.Listener.Password = "pool/@名", "pool@:/#?密%"
 			cfg.MultiPort.Username, cfg.MultiPort.Password = "node:@名", "node@:/#密%"
 			cfg.GeoIP = config.GeoIPConfig{Enabled: true, Listen: "::", Port: 1221}
@@ -99,7 +98,7 @@ func TestExportLinkHostsAndIPv6(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := proxySessionTestConfig()
-			cfg.Mode, cfg.ExternalIP = "hybrid", tc.externalIP
+			cfg.ExternalIP = tc.externalIP
 			cfg.Listener.Address = tc.address
 			cfg.MultiPort = config.MultiPortConfig{Address: tc.address, Username: "node", Password: "pass"}
 			cfg.GeoIP = config.GeoIPConfig{Enabled: true, Listen: tc.address, Port: 1221}
@@ -125,7 +124,6 @@ func TestExportEmptyPasswordAndAnonymousCredentials(t *testing.T) {
 	for _, username := range []string{"wang", ""} {
 		t.Run("username="+username, func(t *testing.T) {
 			cfg := proxySessionTestConfig()
-			cfg.Mode = "hybrid"
 			cfg.Listener.Username, cfg.Listener.Password = username, ""
 			cfg.MultiPort.Username, cfg.MultiPort.Password = username, ""
 			cfg.GeoIP = config.GeoIPConfig{Enabled: true, Port: 1221}
@@ -153,7 +151,6 @@ func TestExportEmptyPasswordAndAnonymousCredentials(t *testing.T) {
 
 func TestExportHealthFilteringAndFilenames(t *testing.T) {
 	cfg := proxySessionTestConfig()
-	cfg.Mode = "multi-port"
 	s, _ := newProxySessionTestServer(t, cfg)
 	for index, tag := range []string{"healthy", "unhealthy", "unchecked", "blacklisted"} {
 		handle := s.mgr.Register(NodeInfo{Tag: tag, ListenAddress: "0.0.0.0", Port: uint16(24000 + index)})
@@ -170,11 +167,11 @@ func TestExportHealthFilteringAndFilenames(t *testing.T) {
 		query, filename string
 		count           int
 	}{
-		{"", "proxy_pool.txt", 1},
-		{"?scheme=socks5", "proxy_pool_socks5.txt", 1},
-		{"?scheme=all", "proxy_pool_all.txt", 2},
-		{"?all=true", "full_proxy_pool.txt", 4},
-		{"?all=1&scheme=all", "full_proxy_pool_all.txt", 8},
+		{"", "proxy_pool.txt", 2},
+		{"?scheme=socks5", "proxy_pool_socks5.txt", 2},
+		{"?scheme=all", "proxy_pool_all.txt", 4},
+		{"?all=true", "full_proxy_pool.txt", 5},
+		{"?all=1&scheme=all", "full_proxy_pool_all.txt", 10},
 	} {
 		links, response := exportTestLinks(t, s, tc.query, "dashboard.example:9091")
 		if len(links) != tc.count {
@@ -203,7 +200,9 @@ func TestPoolExportDoesNotDuplicateNodeEntry(t *testing.T) {
 		s.mgr.Register(NodeInfo{Tag: tag, ListenAddress: cfg.Listener.Address, Port: cfg.Listener.Port}).MarkInitialCheckDone(true)
 	}
 	links, response := exportTestLinks(t, s, "?scheme=all", "dashboard.example:9091")
-	if len(links) != 2 || strings.Contains(response.Body.String(), "# Multi-port") {
+	// Dual-stack always exports the shared pool entry exactly once; per-node
+	// entries may follow it, but the pool block must not be repeated.
+	if len(links) < 2 || strings.Count(response.Body.String(), "# Pool") != 1 {
 		t.Errorf("pool entries duplicated: %s", response.Body.String())
 	}
 }

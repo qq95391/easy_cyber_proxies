@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"easy_proxies/internal/config"
+	"easy_proxies/internal/metrics"
 	"easy_proxies/internal/monitor"
 	"easy_proxies/internal/routing"
 
@@ -71,6 +72,18 @@ type Options struct {
 	// SessionRouting enables explicit named sessions supplied by the inbound.
 	// Unnamed requests retain the pool's normal scheduling behaviour.
 	SessionRouting bool
+	// SwitchBudget bounds the whole failover loop before the caller sees an error.
+	SwitchBudget time.Duration
+	// DialTimeout bounds one upstream dial; zero keeps the legacy behaviour.
+	DialTimeout time.Duration
+	// CircuitBreaker enables per-node three-state breakers.
+	CircuitBreaker *bool
+	// CircuitThreshold is the consecutive-failure count that opens a breaker.
+	CircuitThreshold int
+	// CircuitTimeout is how long an open breaker waits before a half-open probe.
+	CircuitTimeout time.Duration
+	// Fallback is the pool-wide policy when no node is selectable.
+	Fallback string
 }
 
 // MemberMeta carries optional descriptive information for monitoring UI.
@@ -116,6 +129,7 @@ type poolOutbound struct {
 	stickyMu       sync.Mutex        // protects stickyMap
 	stickyMap      map[string]string // sticky key (client source IP) -> member tag
 	sessionStore   *routing.Store
+	breakers       *breakerSet
 }
 
 func newPool(ctx context.Context, _ adapter.Router, logger singlog.ContextLogger, tag string, options Options) (adapter.Outbound, error) {
@@ -144,6 +158,11 @@ func newPool(ctx context.Context, _ adapter.Router, logger singlog.ContextLogger
 				return make([]*memberState, 0, memberCount)
 			},
 		},
+		breakers: newBreakerSet(
+			normalized.CircuitBreaker == nil || *normalized.CircuitBreaker,
+			normalized.CircuitThreshold,
+			normalized.CircuitTimeout,
+		),
 	}
 	if p.sticky {
 		p.stickyMap = make(map[string]string)
@@ -219,6 +238,18 @@ func normalizeOptions(options Options) Options {
 	}
 	if options.RetryAttempts <= 0 {
 		options.RetryAttempts = 3
+	}
+	if options.SwitchBudget <= 0 {
+		options.SwitchBudget = 3 * time.Second
+	}
+	if options.DialTimeout < 0 {
+		options.DialTimeout = 0
+	}
+	if options.CircuitThreshold <= 0 {
+		options.CircuitThreshold = 5
+	}
+	if options.CircuitTimeout <= 0 {
+		options.CircuitTimeout = options.TransientCooldown
 	}
 	if options.Metadata == nil {
 		options.Metadata = make(map[string]MemberMeta)
@@ -311,6 +342,14 @@ func (p *poolOutbound) initializeMembersLocked() error {
 }
 
 func (p *poolOutbound) DialContext(ctx context.Context, network string, destination M.Socksaddr) (net.Conn, error) {
+	metrics.Default().IncRequest()
+	// The switch budget bounds the whole failover loop. All re-selections must
+	// finish before the caller can observe an error.
+	if budget := p.options.SwitchBudget; budget > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, budget)
+		defer cancel()
+	}
 	lease, binding, err := p.acquireSession(ctx)
 	if err != nil {
 		return nil, err
@@ -324,15 +363,33 @@ func (p *poolOutbound) DialContext(ctx context.Context, network string, destinat
 		stickyKey = ""
 	}
 	baseUser := baseUsernameFromCtx(ctx)
+	_, poolName, _ := config.MatchUserPool(baseUser)
 	singleMember := len(p.options.Members) <= 1
 	var tried map[string]bool
 	if !singleMember && maxAttempts > 1 {
 		tried = make(map[string]bool, maxAttempts)
 	}
 	var lastErr error
+	var prevTag string
+	var rerouteReason string
+	var waitTicks int
+	switchStart := time.Now()
+	accessStart := time.Now()
+	var accessNode, accessResult = "", "failed"
+	var accessAttempt int
+	defer func() {
+		errText := ""
+		if lastErr != nil {
+			errText = lastErr.Error()
+		}
+		logAccess(ctx, network, destination, accessNode, accessResult,
+			accessAttempt, errText, float64(time.Since(accessStart).Microseconds())/1000)
+	}()
 	pinned := binding.NodeID
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
+			metrics.Default().IncClientVisibleFailure()
+			metrics.Default().IncRerouteExhausted()
 			return nil, err
 		}
 		var member *memberState
@@ -342,15 +399,43 @@ func (p *poolOutbound) DialContext(ctx context.Context, network string, destinat
 			member, err = p.pickMemberFiltered(network, tried, stickyKey, baseUser)
 		}
 		if err != nil {
+			// All nodes are temporarily unavailable. Wait inside the switch
+			// budget for a cooldown to expire or a half-open probe to recover a
+			// node, rather than failing the caller immediately.
+			if waitTicks < maxQueueWaitTicks && waitForRecoverableNode(ctx) {
+				if waitTicks == 0 {
+					metrics.Default().IncDegrade("queue")
+				}
+				waitTicks++
+				metrics.Default().SetQueueDepth(waitTicks)
+				attempt--
+				continue
+			}
+			metrics.Default().SetQueueDepth(0)
+			metrics.Default().IncClientVisibleFailure()
+			metrics.Default().IncRerouteExhausted()
 			if lastErr != nil {
 				return nil, fmt.Errorf("%w (after %d attempt(s); last: %v)", err, attempt-1, lastErr)
 			}
 			return nil, err
 		}
+		// A reroute is a move to a *different* node after a failed attempt.
+		// Re-selecting the same node (single-member pools) is not a reroute.
+		isReroute := attempt > 1 && prevTag != "" && member.tag != prevTag
 		p.incActive(member)
-		conn, dialErr := member.outbound.DialContext(ctx, network, destination)
+		conn, dialErr := p.dialMember(ctx, member, network, destination)
+		if isBreakerRejection(dialErr) {
+			// An open breaker is not an upstream failure: skip the node and
+			// spend the remaining attempts on other members.
+			p.decActive(member)
+			if tried != nil {
+				tried[member.tag] = true
+			}
+			continue
+		}
 		if dialErr != nil {
 			p.decActive(member)
+			accessNode, accessAttempt = member.tag, attempt
 			// A caller cancellation is not evidence of an unhealthy upstream.
 			if err := ctx.Err(); err != nil {
 				return nil, err
@@ -361,6 +446,12 @@ func (p *poolOutbound) DialContext(ctx context.Context, network string, destinat
 				p.recordFailure(member, dialErr)
 			}
 			lastErr = dialErr
+			rerouteReason = failureReason(dialErr)
+			switchStart = time.Now()
+			if isReroute {
+				metrics.Default().RecordRerouteAttempt(prevTag, member.tag, rerouteReason, network, poolName)
+			}
+			prevTag = member.tag
 			if tried != nil {
 				tried[member.tag] = true
 			}
@@ -384,6 +475,15 @@ func (p *poolOutbound) DialContext(ctx context.Context, network string, destinat
 		if attempt > 1 {
 			p.logger.Info("dial succeeded via ", member.tag, " after ", attempt, " attempts")
 		}
+		if isReroute {
+			elapsedMs := float64(time.Since(switchStart).Microseconds()) / 1000
+			metrics.Default().RecordReroute(prevTag, member.tag, rerouteReason, network, poolName, elapsedMs)
+			logReroute(prevTag, member.tag, rerouteReason, network, elapsedMs)
+		} else {
+			metrics.Default().IncFirstTrySuccess()
+		}
+		metrics.Default().SetQueueDepth(0)
+		accessNode, accessResult, accessAttempt = member.tag, "ok", attempt
 		p.recordSuccess(member)
 		if lease != nil && network == N.NetworkTCP {
 			meta := p.options.Metadata[member.tag]
@@ -395,6 +495,8 @@ func (p *poolOutbound) DialContext(ctx context.Context, network string, destinat
 		}
 		return p.wrapConn(conn, member), nil
 	}
+	metrics.Default().IncClientVisibleFailure()
+	metrics.Default().IncRerouteExhausted()
 	if lastErr == nil {
 		lastErr = E.New("no healthy proxy available")
 	}

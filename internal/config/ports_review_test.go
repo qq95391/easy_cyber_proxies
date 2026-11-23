@@ -48,7 +48,6 @@ func TestPortsReviewAutoAllocationReservesActiveListeners(t *testing.T) {
 		t.Run(fmt.Sprintf("default_sticky_%t", defaultSticky), func(t *testing.T) {
 			base := reviewPortsBase(t)
 			cfg := &Config{
-				Mode:       "hybrid",
 				Listener:   ListenerConfig{Address: "127.0.0.1", Port: base},
 				MultiPort:  MultiPortConfig{Address: "127.0.0.1", BasePort: base},
 				Sticky:     StickyConfig{Enabled: true, Port: base + 1},
@@ -74,7 +73,6 @@ func TestPortsReviewAutoAllocationReservesActiveListeners(t *testing.T) {
 func TestPortsReviewHybridProvisionalConflictSkipsReservedListeners(t *testing.T) {
 	base := reviewPortsBase(t)
 	cfg := &Config{
-		Mode:       "hybrid",
 		Listener:   ListenerConfig{Address: "127.0.0.1", Port: base},
 		MultiPort:  MultiPortConfig{Address: "127.0.0.1", BasePort: base},
 		Sticky:     StickyConfig{Enabled: true},
@@ -93,7 +91,6 @@ func TestPortsReviewSavedPortsCannotClaimReservedListeners(t *testing.T) {
 		t.Run(fmt.Sprint(reserved), func(t *testing.T) {
 			node := reviewPortsNode("existing", 0)
 			cfg := &Config{
-				Mode:       "hybrid",
 				Listener:   ListenerConfig{Address: "127.0.0.1", Port: 2323},
 				MultiPort:  MultiPortConfig{Address: "127.0.0.1", BasePort: reviewPortsBase(t)},
 				Sticky:     StickyConfig{Enabled: true},
@@ -113,7 +110,6 @@ func TestPortsReviewControllerAndManagementAllocation(t *testing.T) {
 	for _, managementEnabled := range []bool{false, true} {
 		t.Run(fmt.Sprintf("management_%t", managementEnabled), func(t *testing.T) {
 			cfg := &Config{
-				Mode:       "multi-port",
 				MultiPort:  MultiPortConfig{Address: "127.0.0.1", BasePort: 9091},
 				Management: ManagementConfig{Enabled: &managementEnabled, Listen: "127.0.0.1:9091"},
 				Nodes:      []NodeConfig{reviewPortsNode("fresh", 0)},
@@ -136,7 +132,6 @@ func TestPortsReviewAllocationExhaustionNeverWraps(t *testing.T) {
 		t.Run(fmt.Sprintf("last_reserved_%t", reserveLast), func(t *testing.T) {
 			disabled := false
 			cfg := &Config{
-				Mode:       "multi-port",
 				MultiPort:  MultiPortConfig{Address: "127.0.0.1", BasePort: 65535},
 				Management: ManagementConfig{Enabled: &disabled},
 				Nodes:      []NodeConfig{reviewPortsNode("first", 0), reviewPortsNode("second", 0)},
@@ -158,7 +153,6 @@ func TestPortsReviewAllocationExhaustionNeverWraps(t *testing.T) {
 
 	t.Run("hybrid_pool_last_explicit_collision", func(t *testing.T) {
 		cfg := &Config{
-			Mode:      "hybrid",
 			Listener:  ListenerConfig{Address: "127.0.0.1", Port: 65535},
 			MultiPort: MultiPortConfig{Address: "127.0.0.1", BasePort: 65535},
 			Nodes:     []NodeConfig{reviewPortsNode("collision", 65535)},
@@ -175,7 +169,7 @@ func TestPortsReviewAllocationExhaustionNeverWraps(t *testing.T) {
 func TestPortsReviewDuplicateSavedPortPreservesFirstOwner(t *testing.T) {
 	base := reviewPortsBase(t)
 	first, duplicate, untouched := reviewPortsNode("first", 0), reviewPortsNode("duplicate", base+1), reviewPortsNode("untouched", 0)
-	cfg := &Config{Mode: "multi-port", MultiPort: MultiPortConfig{Address: "127.0.0.1", BasePort: base}, Nodes: []NodeConfig{first, duplicate, untouched}}
+	cfg := &Config{MultiPort: MultiPortConfig{Address: "127.0.0.1", BasePort: base}, Nodes: []NodeConfig{first, duplicate, untouched}}
 	saved := map[string]uint16{first.NodeKey(): base + 10, duplicate.NodeKey(): base + 10, untouched.NodeKey(): base + 11}
 	if err := cfg.NormalizeWithPortMap(saved); err != nil {
 		t.Fatal(err)
@@ -188,7 +182,7 @@ func TestPortsReviewDuplicateSavedPortPreservesFirstOwner(t *testing.T) {
 
 func TestPortsReviewExplicitDuplicatesAreRejected(t *testing.T) {
 	base := reviewPortsBase(t)
-	cfg := &Config{Mode: "multi-port", MultiPort: MultiPortConfig{Address: "127.0.0.1", BasePort: base}, Nodes: []NodeConfig{reviewPortsNode("first", base), reviewPortsNode("second", base)}}
+	cfg := &Config{MultiPort: MultiPortConfig{Address: "127.0.0.1", BasePort: base}, Nodes: []NodeConfig{reviewPortsNode("first", base), reviewPortsNode("second", base)}}
 	if err := cfg.NormalizeWithPortMap(nil); err == nil {
 		t.Fatal("explicit duplicate ports accepted")
 	}
@@ -199,7 +193,7 @@ func TestPortsReviewExplicitNewNodeCannotDisplaceSavedOwner(t *testing.T) {
 		t.Run(fmt.Sprintf("new_first_%t", newFirst), func(t *testing.T) {
 			base := reviewPortsBase(t)
 			existing, added := reviewPortsNode("existing", 0), reviewPortsNode("added", base+10)
-			cfg := &Config{Mode: "multi-port", MultiPort: MultiPortConfig{Address: "127.0.0.1", BasePort: base}, Nodes: []NodeConfig{existing, added}}
+			cfg := &Config{MultiPort: MultiPortConfig{Address: "127.0.0.1", BasePort: base}, Nodes: []NodeConfig{existing, added}}
 			if newFirst {
 				cfg.Nodes = []NodeConfig{added, existing}
 			}

@@ -322,7 +322,9 @@ func TestMonitorLifecycleCancellationAndStartIdempotence(t *testing.T) {
 
 func TestSettingsRejectInvalidCoreFieldsBeforeSaving(t *testing.T) {
 	cases := []string{
-		`{"mode":"unknown"}`, `{"pool":{"mode":"unknown"}}`,
+		// The legacy topology switch is accepted but ignored, so an unknown
+		// top-level mode is no longer a validation error (only pool.mode is).
+		`{"pool":{"mode":"unknown"}}`,
 		`{"pool":{"failure_threshold":-1}}`, `{"pool":{"blacklist_duration":"bad"}}`,
 		`{"pool":{"transient_cooldown":"-1s"}}`, `{"pool":{"rate_limit_cooldown":"0s"}}`,
 		`{"management":{"listen":"bad-address"}}`, `{"management":{"probe_concurrency":-1}}`,
@@ -340,7 +342,7 @@ func TestSettingsRejectInvalidCoreFieldsBeforeSaving(t *testing.T) {
 				t.Fatalf("invalid settings status=%d: %s", w.Code, w.Body)
 			}
 			after, _ := os.ReadFile(path)
-			if string(after) != string(before) || cfg.Mode != original.Mode || cfg.Management != original.Management || cfg.Listener != original.Listener || !reflect.DeepEqual(cfg.Pool, original.Pool) {
+			if string(after) != string(before) || cfg.Management != original.Management || cfg.Listener != original.Listener || !reflect.DeepEqual(cfg.Pool, original.Pool) {
 				t.Fatal("rejected settings modified file or runtime state")
 			}
 		})

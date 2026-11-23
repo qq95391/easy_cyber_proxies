@@ -2,6 +2,7 @@ package session
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"easy_proxies/internal/metrics"
 
 	"github.com/sagernet/sing-box/adapter"
 	M "github.com/sagernet/sing/common/metadata"
@@ -199,8 +202,29 @@ func (h *Inbound) forwardHTTP(ctx context.Context, conn net.Conn, reader *bufio.
 	outReq.Header = req.Header.Clone()
 	outReq.RequestURI = ""
 	stripProxyHeaders(outReq.Header, upgrade)
-	resp, err := transport.RoundTrip(outReq)
-	if err != nil {
+
+	// A failure before any response headers arrive can be hidden from the
+	// caller by replaying a safely replayable request on a fresh pool dial.
+	// Non-idempotent methods, upgrades and unbounded bodies are never replayed
+	// (RFC 9110 §9.2.2); those connections keep the legacy failure behaviour.
+	replayable, replayBody := prepareReplay(outReq, upgrade)
+	var resp *http.Response
+	var roundTripErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		if attempt > 0 {
+			metrics.Default().IncDegrade("idempotent_replay")
+			retryReq := outReq.Clone(outReq.Context())
+			if replayBody != nil {
+				retryReq.Body = io.NopCloser(bytes.NewReader(replayBody))
+			}
+			outReq = retryReq
+		}
+		resp, roundTripErr = transport.RoundTrip(outReq)
+		if roundTripErr == nil || !replayable || requestCtx.Err() != nil {
+			break
+		}
+	}
+	if roundTripErr != nil {
 		writeHTTPError(conn, http.StatusBadGateway)
 		return errors.New("proxy HTTP forwarding failed")
 	}

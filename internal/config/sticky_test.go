@@ -16,12 +16,10 @@ func TestNormalizeSticky(t *testing.T) {
 	}{
 		{
 			name:     "disabled is a no-op",
-			mode:     "pool",
 			stickyEn: false,
 		},
 		{
 			name:        "pool mode auto-assigns listener.port+1",
-			mode:        "pool",
 			listenPort:  2323,
 			stickyEn:    true,
 			wantEnabled: true,
@@ -29,7 +27,6 @@ func TestNormalizeSticky(t *testing.T) {
 		},
 		{
 			name:        "explicit port is kept",
-			mode:        "pool",
 			listenPort:  2323,
 			stickyEn:    true,
 			stickyPort:  9000,
@@ -38,22 +35,14 @@ func TestNormalizeSticky(t *testing.T) {
 		},
 		{
 			name:       "conflict with listener port errors",
-			mode:       "pool",
 			listenPort: 2323,
 			stickyEn:   true,
 			stickyPort: 2323,
 			wantErr:    true,
 		},
-		{
-			name:        "non-pool mode disables sticky silently",
-			mode:        "multi-port",
-			listenPort:  2323,
-			stickyEn:    true,
-			wantEnabled: false,
-		},
+
 		{
 			name:       "conflict with node port errors",
-			mode:       "hybrid",
 			listenPort: 2323,
 			stickyEn:   true,
 			stickyPort: 24001,
@@ -64,7 +53,7 @@ func TestNormalizeSticky(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			c := &Config{Mode: tt.mode}
+			c := &Config{}
 			c.Listener.Port = tt.listenPort
 			c.Sticky.Enabled = tt.stickyEn
 			c.Sticky.Port = tt.stickyPort

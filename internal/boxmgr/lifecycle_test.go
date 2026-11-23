@@ -36,7 +36,7 @@ func (b *lifecycleTestBox) Close() error {
 	return nil
 }
 func lifecycleTestManager() *Manager {
-	return New(&config.Config{Mode: "multi-port", MultiPort: config.MultiPortConfig{Address: "127.0.0.1"}, Nodes: []config.NodeConfig{{Name: "fixture", URI: "http://127.0.0.1:1", Port: 30000}}}, monitor.Config{ProbeTarget: ""})
+	return New(&config.Config{MultiPort: config.MultiPortConfig{Address: "127.0.0.1"}, Nodes: []config.NodeConfig{{Name: "fixture", URI: "http://127.0.0.1:1", Port: 30000}}}, monitor.Config{ProbeTarget: ""})
 }
 func TestStartRejectsCancelledContextWithoutAllocatingComponents(t *testing.T) {
 	m := lifecycleTestManager()
@@ -171,7 +171,7 @@ func TestTriggerReloadWithoutConfigReturnsError(t *testing.T) {
 }
 func TestReassignConflictingPortDoesNotOverflow(t *testing.T) {
 	for _, port := range []uint16{65535, 65534} {
-		cfg := &config.Config{Mode: "multi-port", MultiPort: config.MultiPortConfig{Address: "127.0.0.1"}, Nodes: []config.NodeConfig{{Name: "fixture", Port: port}, {Name: "reserved", Port: 65535}}}
+		cfg := &config.Config{MultiPort: config.MultiPortConfig{Address: "127.0.0.1"}, Nodes: []config.NodeConfig{{Name: "fixture", Port: port}, {Name: "reserved", Port: 65535}}}
 		if reassignConflictingPort(cfg, port) {
 			t.Fatalf("port %d unexpectedly reassigned", port)
 		}
@@ -343,7 +343,7 @@ func TestReassignConflictingPortSkipsStoppedAuxiliaryListeners(t *testing.T) {
 	if base >= 65533 {
 		t.Skip("ephemeral port is too close to maximum for this fixture")
 	}
-	cfg := &config.Config{Mode: "hybrid", Listener: config.ListenerConfig{Port: base + 3}, MultiPort: config.MultiPortConfig{Address: "127.0.0.1"}, Sticky: config.StickyConfig{Enabled: true, Port: base + 1}, GeoIP: config.GeoIPConfig{Enabled: true, Port: base + 2}, Nodes: []config.NodeConfig{{Name: "fixture", Port: base}}}
+	cfg := &config.Config{Listener: config.ListenerConfig{Port: base + 3}, MultiPort: config.MultiPortConfig{Address: "127.0.0.1"}, Sticky: config.StickyConfig{Enabled: true, Port: base + 1}, GeoIP: config.GeoIPConfig{Enabled: true, Port: base + 2}, Nodes: []config.NodeConfig{{Name: "fixture", Port: base}}}
 	if !reassignConflictingPort(cfg, base) {
 		t.Fatal("available replacement port was not found")
 	}

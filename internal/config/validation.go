@@ -29,7 +29,7 @@ func (c *Config) ValidateManagementSettings() error {
 	if c == nil {
 		return fmt.Errorf("config is nil")
 	}
-	switch c.Mode {
+	switch ModeDualStack {
 	case "", "pool", "multi-port", "multi_port", "hybrid":
 	default:
 		return fmt.Errorf("invalid proxy mode")
@@ -66,7 +66,7 @@ func (c *Config) ValidateManagementSettings() error {
 	if c.Sticky.MaxSessions < 0 || c.Sticky.MaxSessions > MaxSessionCapacity {
 		return fmt.Errorf("sticky.max_sessions must be between 1 and %d", MaxSessionCapacity)
 	}
-	if c.Sticky.Enabled && (c.Mode == "pool" || c.Mode == "hybrid" || c.Mode == "") {
+	if c.Sticky.Enabled && (ModeDualStack == "pool" || ModeDualStack == "hybrid" || ModeDualStack == "") {
 		listenPort := c.Listener.Port
 		if listenPort == 0 {
 			listenPort = 2323

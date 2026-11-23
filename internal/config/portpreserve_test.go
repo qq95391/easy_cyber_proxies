@@ -66,7 +66,6 @@ func TestNormalizeWithPortMap_PreservesAcrossRefresh(t *testing.T) {
 
 	// Initial running config.
 	cfg := &Config{
-		Mode:      "multi-port",
 		MultiPort: MultiPortConfig{Address: "127.0.0.1", BasePort: 24000},
 		Nodes: []NodeConfig{
 			{URI: uriA},
@@ -86,7 +85,6 @@ func TestNormalizeWithPortMap_PreservesAcrossRefresh(t *testing.T) {
 
 	// Refreshed subscription: A renamed, B params reordered, C dropped, D added.
 	refreshed := &Config{
-		Mode:      "multi-port",
 		MultiPort: MultiPortConfig{Address: "127.0.0.1", BasePort: 24000},
 		Nodes: []NodeConfig{
 			{URI: "vless://uuid-a@a.example.com:443?type=ws&security=tls#NodeA-Renamed-50GB"},

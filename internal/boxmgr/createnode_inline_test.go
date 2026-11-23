@@ -32,7 +32,6 @@ nodes: []
 	}
 
 	cfg := &config.Config{
-		Mode:          "pool",
 		Subscriptions: []string{"https://example.com/sub"},
 		Nodes:         []config.NodeConfig{},
 	}

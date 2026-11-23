@@ -9,7 +9,6 @@ import (
 func TestCreateNewConfig_PreservesInlineNodes(t *testing.T) {
 	// Setup base config with inline nodes
 	baseCfg := &config.Config{
-		Mode: "pool",
 		Nodes: []config.NodeConfig{
 			{
 				Name:   "inline-node-1",
@@ -76,7 +75,6 @@ func TestCreateNewConfig_PreservesInlineNodes(t *testing.T) {
 func TestCreateNewConfig_OnlySubscriptionNodes(t *testing.T) {
 	// Setup base config without inline nodes
 	baseCfg := &config.Config{
-		Mode:  "pool",
 		Nodes: []config.NodeConfig{},
 	}
 
@@ -107,7 +105,6 @@ func TestCreateNewConfig_OnlySubscriptionNodes(t *testing.T) {
 
 func TestCreateNewConfig_SubscriptionSourceMarked(t *testing.T) {
 	baseCfg := &config.Config{
-		Mode:  "pool",
 		Nodes: []config.NodeConfig{},
 	}
 

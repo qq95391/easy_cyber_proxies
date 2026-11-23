@@ -90,15 +90,15 @@ func Build(cfg *config.Config) (option.Options, error) {
 			Identity: fmt.Sprintf("%x", sha256.Sum256([]byte(node.NodeKey()))),
 			Name:     node.Name,
 			URI:      node.URI,
-			Mode:     cfg.Mode,
+			Mode:     config.ModeDualStack,
 		}
-		// For multi-port and hybrid modes, use per-node port
-		if cfg.Mode == "multi-port" || cfg.Mode == "hybrid" {
-			meta.ListenAddress = cfg.MultiPort.Address
-			meta.Port = node.Port
-		} else {
+		// Dual-stack: every node owns a per-node listener port. Callers that
+		// build without running normalize (embedded tests) leave Port at 0; the
+		// per-node inbound is then skipped instead of binding the shared entry.
+		meta.ListenAddress = cfg.MultiPort.Address
+		meta.Port = node.Port
+		if meta.ListenAddress == "" {
 			meta.ListenAddress = cfg.Listener.Address
-			meta.Port = cfg.Listener.Port
 		}
 
 		// Default region (will be updated by concurrent GeoIP resolution)
@@ -178,9 +178,33 @@ func Build(cfg *config.Config) (option.Options, error) {
 		}
 	}
 
-	// Check if we have at least one valid node
+	// Check if we have at least one valid node. With pool.fallback=direct an
+	// empty pool still boots: the shared entry stays reachable and every
+	// request is forwarded directly, so operators can log in and add nodes.
 	if len(baseOutbounds) == 0 {
-		return option.Options{}, fmt.Errorf("no valid nodes available (all %d nodes failed to build)", len(cfg.Nodes))
+		if cfg.Pool.FallbackOrDefault() != "direct" {
+			return option.Options{}, fmt.Errorf("no valid nodes available (all %d nodes failed to build)", len(cfg.Nodes))
+		}
+		log.Printf("⚠️  no usable nodes; pool.fallback=direct -> routing directly")
+		config.PublishUserPools(nil)
+		directInbound, err := buildPoolInbound(cfg)
+		if err != nil {
+			return option.Options{}, err
+		}
+		directInbounds := []option.Inbound{directInbound}
+		if cfg.Sticky.Enabled {
+			stickyInbound, err := buildStickyInbound(cfg)
+			if err != nil {
+				return option.Options{}, err
+			}
+			directInbounds = append(directInbounds, stickyInbound)
+		}
+		return option.Options{
+			Log:       &option.LogOptions{Level: strings.ToLower(cfg.LogLevel)},
+			Inbounds:  directInbounds,
+			Outbounds: []option.Outbound{{Type: C.TypeDirect, Tag: "direct"}},
+			Route:     &option.RouteOptions{Final: "direct"},
+		}, nil
 	}
 
 	// Log summary
@@ -210,19 +234,18 @@ func Build(cfg *config.Config) (option.Options, error) {
 	)
 	copy(outbounds, baseOutbounds)
 
-	// Determine which components to enable based on mode
-	enablePoolInbound := cfg.Mode == "pool" || cfg.Mode == "hybrid"
-	enableMultiPort := cfg.Mode == "multi-port" || cfg.Mode == "hybrid"
-
-	if !enablePoolInbound && !enableMultiPort {
-		return option.Options{}, fmt.Errorf("unsupported mode %s", cfg.Mode)
-	}
+	// Dual-stack is the only supported topology: the shared pool entry and the
+	// per-node listeners are always built together.
+	enablePoolInbound := true
+	enableMultiPort := true
 
 	// Build pool inbound (single entry point for all nodes)
 	if enablePoolInbound {
 		// Publish user-pool routing rules before the outbound is constructed so
 		// a fresh build and a hot update observe the same canonical form.
-		config.SetUserPools(cfg.Pool.UserPools)
+		// Legacy config.yaml user_pools rules are retired; account-owned pools
+		// are merged into the same publication by config.PublishUserPools.
+		config.PublishUserPools(nil)
 		inbound, err := buildPoolInbound(cfg)
 		if err != nil {
 			return option.Options{}, err
@@ -240,6 +263,12 @@ func Build(cfg *config.Config) (option.Options, error) {
 			BlacklistFailedPin: cfg.Pool.BlacklistFailedPin,
 			RetryAttempts:      cfg.Pool.RetryAttempts,
 			Metadata:           metadata,
+			SwitchBudget:       cfg.Pool.SwitchBudgetOrDefault(),
+			DialTimeout:        cfg.Pool.DialTimeoutOrDefault(),
+			CircuitBreaker:     cfg.Pool.EnableCircuitBreaker,
+			CircuitThreshold:   cfg.Pool.FailureThreshold,
+			CircuitTimeout:     cfg.Pool.TransientCooldown,
+			Fallback:           cfg.Pool.FallbackOrDefault(),
 		}
 		outbounds = append(outbounds, option.Outbound{
 			Type:    poolout.Type,
@@ -301,6 +330,11 @@ func Build(cfg *config.Config) (option.Options, error) {
 		}
 		for _, tag := range memberTags {
 			meta := metadata[tag]
+			if meta.Port == 0 {
+				// No per-node port assigned (normalize not run); the shared pool
+				// entry still serves this node, so skip only the dedicated port.
+				continue
+			}
 			perMeta := map[string]poolout.MemberMeta{tag: meta}
 			poolTag := fmt.Sprintf("%s-%s", poolout.Tag, tag)
 			perOptions := poolout.Options{
@@ -1492,8 +1526,8 @@ func printProxyLinks(cfg *config.Config, metadata map[string]poolout.MemberMeta)
 	log.Println("📡 Proxy Links:")
 	log.Println("═══════════════════════════════════════════════════════════════")
 
-	showPoolEntry := cfg.Mode == "pool" || cfg.Mode == "hybrid"
-	showMultiPort := cfg.Mode == "multi-port" || cfg.Mode == "hybrid"
+	showPoolEntry := config.ModeDualStack == "pool" || config.ModeDualStack == "hybrid"
+	showMultiPort := config.ModeDualStack == "multi-port" || config.ModeDualStack == "hybrid"
 
 	if showPoolEntry {
 		// Pool mode: single entry point for all nodes

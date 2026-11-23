@@ -129,7 +129,7 @@ func startSessionLocalManager(t *testing.T, a, b *sessionLocalUpstream, sessionE
 	t.Helper()
 	disableManagement := false
 	cfg := &config.Config{
-		Mode: "pool", LogLevel: "error",
+		LogLevel:   "error",
 		Listener:   config.ListenerConfig{Address: "127.0.0.1", Port: sessionLocalPort(t), Username: "wang", Password: "1234"},
 		Pool:       config.PoolConfig{Mode: "sequential", FailureThreshold: 100, RetryAttempts: 2},
 		Sticky:     config.StickyConfig{SessionEnabled: sessionEnabled, SessionTTL: time.Hour, MaxSessions: 100},

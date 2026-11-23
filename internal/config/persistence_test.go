@@ -17,7 +17,7 @@ func TestConcurrentPersistencePreservesSeparateOwners(t *testing.T) {
 	if err := os.WriteFile(path, []byte("mode: pool\nlistener:\n  address: 127.0.0.1\n  username: old\nnodes: []\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	management := &Config{Mode: "pool", Listener: ListenerConfig{Address: "127.0.0.1", Username: "new-user"}}
+	management := &Config{Listener: ListenerConfig{Address: "127.0.0.1", Username: "new-user"}}
 	nodes := &Config{Nodes: []NodeConfig{{Name: "new-node", URI: "http://127.0.0.1:8080", Source: NodeSourceInline}}}
 	sub := &Config{Subscriptions: []string{"http://fixture.invalid/sub"}, SubscriptionRefresh: SubscriptionRefreshConfig{Interval: 2 * time.Hour}}
 	for _, cfg := range []*Config{management, nodes, sub} {
@@ -145,7 +145,7 @@ func TestLockedWriteFailureAndBindMountFallback(t *testing.T) {
 	if err := os.WriteFile(path, []byte("invalid: ["), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := updateConfigFile(path, func(c *Config) { c.Mode = "pool" }); err == nil {
+	if err := updateConfigFile(path, func(c *Config) { c.ExternalIP = "changed" }); err == nil {
 		t.Fatal("invalid original must not be silently replaced")
 	}
 	data, _ = os.ReadFile(path)

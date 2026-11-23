@@ -1,555 +1,379 @@
-# Easy Proxies
+# Easy Proxies（二开版）
 
-[简体中文](README_ZH.md)
+基于 [sing-box](https://github.com/SagerNet/sing-box) 的多协议代理池：一个共享入口 + 每节点独立端口同时提供服务，内置健康探测、三态熔断、调用方零感知改道、独立账号与分池、结构化分级日志与管理面板。
 
-> A sing-box based proxy pool manager -- aggregate many upstream proxy nodes into one stable, health-checked, load-balanced local proxy endpoint.
+> 本仓库是 `jasonwong1991/easy_proxies` 的二开分支，在原版基础上重构了运行拓扑、验证模型、账号体系与可观测性。原版文档中的 `mode` 多选一、`pool.user_pools` 配置方式已在本分支废弃，详见[升级与破坏性变更](#升级与破坏性变更)。
 
-## Features
+---
 
-- **Three runtime modes**: `pool` (single-port load balancing), `multi-port` (one port per node), and `hybrid` (both simultaneously)
-- **Wide protocol support**: VLESS, VMess, Trojan, Shadowsocks, Hysteria2, TUIC, AnyTLS, SOCKS5, HTTP/HTTPS
-- **Automatic health checking** with configurable failure thresholds, blacklist duration, and separate cooldowns for transient (timeout/reset/503) and rate-limit (429) failures, plus manual blacklist/release from the dashboard
-- **Automatic fail-over retry**: when a node's dial fails, the request is retried on another healthy node (configurable attempts)
-- **GeoIP region routing**: classify nodes by country and route traffic through a specific region via a dedicated HTTP proxy endpoint
-- **Session routing on the main port**: use `username.sessionID` to keep the same upstream node across connections, with failover when that node fails; the bare username keeps normal pool scheduling. The optional legacy source-IP sticky port remains available
-- **Multiple node sources**: inline config, `nodes.txt` file, or subscription URLs (Base64, plain text, Clash YAML)
-- **Subscription auto-refresh with hot-reload**: periodically fetches subscription updates and reloads without restart
-- **Stable per-node ports**: in `multi-port`/`hybrid` mode each node keeps the same local port across subscription refreshes and restarts (persisted to `node_ports.json`)
-- **WebUI dashboard**: real-time node status, traffic charts, diagnostics, log console, and common runtime/subscription settings
-- **Management API**: RESTful endpoints for node CRUD, probing, blacklisting, subscription management, and config reload
-- **Configurable DNS resolver** with fallback servers and IPv4/IPv6 strategy control
-- **Log rotation**: size-based rotation with configurable backup count, age, and compression
-- **Multi-platform Docker**: supports amd64 and arm64 with host networking
+## 特性
 
-## Quick Start
+| 能力 | 说明 |
+|---|---|
+| **多协议** | VMess / VLESS / Trojan / Shadowsocks / Hysteria2 / TUIC / AnyTLS / SOCKS5 / HTTP(S)。`ssr://`、`hysteria://` 可被解析但不参与构建 |
+| **双栈拓扑** | 共享 pool 入口（默认 2323）+ 每节点独立端口（默认 24000 起）同时启动，无需切换模式 |
+| **零感知改道** | 拨号阶段失败自动换节点，全部改道在 `switch_budget`（默认 3s）内完成；超时才向调用方报错 |
+| **三态熔断** | 每节点 Closed / Open / HalfOpen，连续失败达阈值后跳过，半开探测自动恢复 |
+| **会话粘性** | `用户名.会话ID` 固定到单一上游节点，支持 TTL 与容量上限 |
+| **独立账号** | 每用户独立凭据（bcrypt），一用户单池，支持启停、到期、会话/并发配额、凭据轮换，变更热生效 |
+| **分层验证** | 后台 `generate_204` 保活；全维度严格验证（出口 IP / 匿名度 / 真实性 / MITM / 延迟 / 带宽）由人工按需触发 |
+| **多来源接入** | 内联节点、`nodes.txt`、订阅、网络空间测绘（FOFA / Hunter / Quake / 自定义）、免费代理池（proxy_pool） |
+| **节点管理** | WebUI 增删改、按协议动态表单、Clash YAML 批量导入 + 解析预览 + 事务式批量添加 |
+| **可观测** | 改道数、切换耗时 P95/P99、感知失败率、重载断连；结构化日志支持级别/类别/关键字检索，并记录访问目标域名/IP |
+| **管理面板** | 监控看板 / 用户与分池 / 会话路由 / 节点配置 / 诊断分析 / 控制台日志 / 系统设置 |
 
-### 1. Prepare Configuration
+---
 
-```bash
-cp config.example.yaml config.yaml
-touch nodes.txt
-```
+## 快速开始
 
-Edit `config.yaml` and add your proxy nodes (inline nodes, `nodes.txt` file, or subscription URLs). Replace the example `vless://uuid@server:443` entry before use: it is documentation, not a working node. If you use subscriptions or a node file, remove that inline example after configuring the actual source.
+### 前置条件
 
-> Why `touch nodes.txt`? If you bind-mount a host *file* path that doesn't exist yet (e.g. `-v ./data/nodes.txt:/etc/easy_proxies/nodes.txt`), Docker creates a **directory** named `nodes.txt` on the host and mounts that. The container then sees a directory where it expects a file and fails opaquely. Pre-creating the file (or mapping the **directory** `./data:/etc/easy_proxies`, which auto-generates files) avoids this. If you hit it, run `rm -rf ./data/nodes.txt && touch ./data/nodes.txt` and restart.
+- Docker 24+ 与 Docker Compose v2
+- 2 GB 以上可用内存（节点数多时按需增加）
+- 需要拉取镜像与 Go 依赖的网络环境
 
-### 2. Run with Docker (Recommended)
-
-Config files are auto-generated on first run. The default directory mount reads **`./data/config.yaml`**, not the repository-root `config.yaml`. For a prepared configuration, copy it to `data/config.yaml` before starting; otherwise edit the generated file and configure real nodes before using the proxy.
+### Docker Compose 部署
 
 ```bash
-mkdir -p data logs
-docker run --user $(id -u):$(id -g) \
-  -v $(pwd)/data:/etc/easy_proxies \
-  -v $(pwd)/logs:/app/logs \
-  --network host \
-  ghcr.io/jasonwong1991/easy_proxies:latest
+git clone <your-fork-url> easy_proxies
+cd easy_proxies
+cp .env.example .env      # 按需填写端口、面板密码、测绘密钥
+docker compose up -d --build
 ```
 
-Or use docker compose:
-```bash
-docker compose up -d
-```
+启动后：
 
-### 3. Run from Source
+| 端口 | 用途 |
+|---|---|
+| `32323` → 容器 `2323` | 共享 pool 入口（HTTP + SOCKS5，同一端口多协议） |
+| `9091` | 管理面板与 `/api/*` |
+| `24000-24200` | 每节点独立端口，**默认不映射到宿主机**（容器内验证与管理面使用；需要宿主机直连时取消 `docker-compose.yml` 中该行的注释） |
+| `5010` | 内置 `proxy_pool` 的 API（`/get/` `/all/` `/count/`） |
 
-Use **Go 1.26.10 or newer**; the Docker builder is pinned to Go 1.26.10.
+首次启动时：若 `data/config.yaml` 不存在，`entrypoint.sh` 会从镜像内 `config.example.yaml` 生成；`data/` 与 `logs/` 通过 volume 持久化。
 
-```bash
-go run ./cmd/easy_proxies --config config.yaml
-```
-
-The default source build excludes optional sing-box features, including the Clash API traffic counters; the management UI still works, but real-time traffic charts need `with_clash_api`. To use the same feature tags as the Docker image:
+### 本地构建（可选）
 
 ```bash
-go run -tags "with_utls with_quic with_grpc with_wireguard with_gvisor with_clash_api" \
-  ./cmd/easy_proxies --config config.yaml
+go build ./...
+go test ./... -count=1
+node --test scripts/test-ui.mjs    # 前端 fixture
 ```
 
-### 4. Access WebUI
+要求 Go 1.26.10 及以上（见 `go.mod`）。
 
-Open `http://localhost:9091` in your browser.
+---
 
-## Upgrading to v3.3.0
+## 运行拓扑：固定双栈
 
-See the [bilingual release notes](docs/releases/v3.3.0.md) and [full changelog](CHANGELOG.md). Session IDs may now be up to 100 characters, and a named session whose pinned node fails to dial re-routes once and blacklists that node immediately (`pool.blacklist_failed_pin`, default `true`). Pin the image to `ghcr.io/jasonwong1991/easy_proxies:3.3.0` and, after the publication workflow finishes:
+```
+客户端 ──► 共享入口 2323（HTTP/SOCKS5，池内调度）
+        └► 节点端口 24000+（每节点一个，直连该节点）
 
-```bash
-docker compose pull easy_proxies
-docker compose up -d --force-recreate easy_proxies
+两条路径同时存在，互不影响；共享入口仍走健康加权/会话粘性/熔断/改道。
 ```
 
-## Upgrading to v3.2.0
+- `mode` 字段已从配置移除，写了也会被忽略。
+- 每个节点固定占用一个端口：节点数超过可用端口范围时启动会失败，需调大 `multi_port.base_port` 或减少节点。
+- 共享入口是主链路；per-node 端口用于「指定出口」与严格验证，不需要时可不映射到宿主机。
 
-See the [bilingual release notes](docs/releases/v3.2.0.md) and [full changelog](CHANGELOG.md). Back up your mounted configuration directory and retain `node_ports.json` before upgrading. To pin the release, set the Compose image to `ghcr.io/jasonwong1991/easy_proxies:3.2.0`; after its publication workflow finishes, run:
+---
 
-```bash
-docker compose pull easy_proxies
-docker compose up -d --force-recreate easy_proxies
-```
+## 配置说明
 
-Recreating the container clears in-memory named sessions, but saved per-node ports survive. A management password change takes effect immediately and requires a new login. Directory mounts provide atomic configuration replacement; individual-file bind mounts remain compatible through a locked in-place fallback, without the same crash/power-loss atomicity guarantees. Source builds need Go 1.26.10+ and the production feature tags for optional protocols/traffic statistics.
+完整示例见 `config.example.yaml`，生产配置放在 `data/config.yaml`。
 
-## Configuration
+### 入口与端口
 
-### Runtime Modes
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| `listener.address` / `port` | `0.0.0.0:2323` | 共享入口，HTTP 与 SOCKS5 同端口 |
+| `listener.username` / `password` | — | 兼容用的全局凭据；独立账号启用后仍可作为旧客户端凭据 |
+| `multi_port.address` | `0.0.0.0` | per-node 监听地址 |
+| `multi_port.base_port` | `24000` | per-node 起始端口，按节点数顺延 |
+| `multi_port.username` / `password` | — | per-node 入口默认凭据 |
 
-| Mode | Description |
-|------|-------------|
-| `pool` | Single port proxy pool. All nodes share one port with load balancing |
-| `multi-port` | One local port per node for direct access |
-| `hybrid` | Both pool + multi-port simultaneously |
+### 池调度与零感知
 
-### Pool Scheduling
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| `pool.mode` | `sequential` | `sequential` / `random` / `balance` / `latency` |
+| `pool.retry_enabled` / `retry_attempts` | `true` / `3` | 首次拨号失败后自动换节点重试 |
+| `pool.failure_threshold` | `3` | 连续失败到该值进入黑名单 |
+| `pool.blacklist_duration` | `24h` | 黑名单时长，可通过 API 手动释放 |
+| `pool.transient_cooldown` | `60s` | 超时/重置/503 的短冷却 |
+| `pool.rate_limit_cooldown` | `60s` | 429 限流的冷却 |
+| `pool.switch_budget` | `3s` | **一次请求内所有改道的总预算** |
+| `pool.dial_timeout` | 关闭 | 单次拨号超时，留空沿用调用方 context |
+| `pool.health_interval` | `5m` | 后台 `generate_204` 探测周期 |
+| `pool.enable_circuit_breaker` | `true` | 每节点三态熔断 |
+| `pool.fallback` | `none` | 池内全不可用时：`none` / `default_pool` / `direct` |
+| `pool.blacklist_failed_pin` | `true` | 会话绑定节点拨号失败时立即拉黑 |
 
-| Algorithm | Description |
-|-----------|-------------|
-| `sequential` | Round-robin through healthy nodes |
-| `random` | Random node selection |
-| `balance` | Least-connections balancing |
-| `latency` | Pick the node with the lowest measured latency |
+> `fallback: direct` 会让流量**绕过代理、使用真实出口 IP**，仅在无可用节点时作为兜底。管理面板在选中该项时会显示红色警告。
 
-### Minimal Config Example
+### 会话路由与粘性
+
+- 主入口支持 `用户名.会话ID` 形式固定上游节点：`http://wang.account01:1234@host:2323`。
+- `sticky.session_enabled`（默认 `true`）、`session_ttl`（默认 `24h`）、`max_sessions`（默认 `10000`）。
+- `sticky.enabled` / `port` 只控制旧的「来源 IP 粘性端口」，与命名会话相互独立。
+- 已建立的连接不会迁移，已发送的请求不会因 HTTP 业务错误自动重放。
+
+### 管理面板
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| `management.enabled` | `true` | 是否启用面板 |
+| `management.listen` | `0.0.0.0:9091` | 面板与 API 监听地址 |
+| `management.password` | 空 | 为空则不需要登录（**生产务必设置**） |
+| `management.probe_target` | `http://cp.cloudflare.com/generate_204` | 健康探测目标 |
+
+### 扩展来源与验证（`extension`）
+
+默认全部关闭，需显式启用。
 
 ```yaml
-mode: pool
-
-listener:
-  address: 0.0.0.0
-  port: 2323
-  username: user
-  password: pass
-
-pool:
-  mode: sequential    # sequential / random / balance / latency
-  failure_threshold: 3
-  blacklist_duration: 24h
-  transient_cooldown: 60s   # cooldown after timeout / connection reset / 503
-  rate_limit_cooldown: 60s  # cooldown after HTTP 429; set e.g. 2h to avoid the node longer
-  retry_enabled: true # retry on another node when a dial fails
-  retry_attempts: 3   # max total dial attempts per request
-  blacklist_failed_pin: true  # blacklist a session pin's node immediately when its dial fails (429/timeout keep their cooldown)
-
-management:
+extension:
   enabled: true
-  listen: 0.0.0.0:9091
-  probe_target: http://cp.cloudflare.com/generate_204
-  password: ""
+  outbound_proxy: "http://127.0.0.1:7897"   # 来源出站代理，留空直连
+  cache_file: extension_nodes.txt
 
-dns:
-  server: 223.5.5.5
-  port: 53
-  strategy: prefer_ipv4
+  mapping:            # 网络空间测绘：fofa / hunter / quake / 自定义 provider
+    enabled: false
+    interval: 6h
+    presets:
+      - platform: fofa
+        enabled: true
+        key_env: FOFA_KEY          # 只写环境变量名，明文放 .env
+        query: 'protocol=="socks5" && country="CN"'
+        size: 300
 
-nodes_file: nodes.txt
+  freepool:           # 免费代理池：内置抓取器 或 外部 proxy_pool
+    enabled: false
+    interval: 10m
+    external_api:
+      enabled: true
+      base_url: "http://proxy-pool:5010"   # 容器内用服务名，不要用宿主 IP
+      get_path: "/get/"                    # 必须 /get/；/all/ 返回数组，当前解析器不支持
+      batch: 20
+
+  verification:       # 全维度严格验证（人工触发，不自动入池）
+    enabled: true
+    echo_ip_url: "https://httpbin.org/ip"
+    min_score: 40
+    timeout: 8s
+    concurrency: 32
+    retries: 3
+    recheck_interval: 10m
+    max_failures: 3
+    authenticity:
+      action: reject      # reject / mark / downgrade
+    mitm:
+      action: reject
 ```
 
-### Session Routing (pool/hybrid mode)
+### 节点来源
 
-The main HTTP/SOCKS5 entry supports both ordinary pool scheduling and fixed-node sessions without another port. Configure a non-empty listener username and use its existing password; a strong, non-empty password is recommended:
+三种方式可混用：
 
-```yaml
-listener:
-  address: 0.0.0.0
-  port: 2323
-  username: wang
-  password: "1234"  # example only; choose your own password
+1. `subscriptions:` 订阅链接（支持 http(s)、本地文件、`inline:<base64>`）
+2. `nodes_file: nodes.txt` 每行一个 URI
+3. `nodes:` 直接内联
 
-sticky:
-  session_enabled: true # defaults to true when omitted
-  session_ttl: 24h      # release bindings after this much idle time
-  max_sessions: 10000   # bound session memory usage
-  enabled: false       # legacy source-IP sticky port; independent of session_enabled
-  port: 2324
+支持的 URI 形式：
+
+```
+vmess://base64_json
+vless://uuid@host:port?security=tls&type=ws&path=/x#name
+trojan://password@host:port?sni=x#name
+ss://base64(method:password)@host:port#name
+hy2://password@host:port#name
+tuic://uuid:password@host:443#name
+anytls://password@host:443#name
+socks5://[user:pass@]host:port#name
+http(s)://[user:pass@]host:port#name
 ```
 
-| Proxy URL | Routing |
-| --- | --- |
-| `http://wang:1234@127.0.0.1:2323` | Ordinary pool scheduling |
-| `http://wang.account01:1234@127.0.0.1:2323` | Fixed upstream node for session `account01` |
-| `socks5h://wang.account01:1234@127.0.0.1:2323` | The same session over SOCKS5, with proxy-side DNS |
+---
 
-Session IDs are chosen by the client: **1–100 characters matching `[A-Za-z0-9_-]`**. No registration is needed. Reuse an ID to reuse its node; use another ID for a separate binding. Different IDs can still select the same node. The password remains the listener password; the session suffix is not a password or a separate account.
+## 验证模型（重要）
+
+| 层 | 触发 | 方式 | 是否影响入池 | 是否重载核心 |
+|---|---|---|---|---|
+| **L1 入池准入** | 添加/抓取 | `generate_204` 健康探测 | 不通过则不入池 | 新增节点需重载 |
+| **L2 后台保活** | 周期 `health_interval` | `generate_204` | 连续失败按黑名单/冷却处理 | 否 |
+| **L3 严格验证** | **人工触发** | 全维度评分（出口 IP、匿名度、真实性、MITM、延迟、带宽） | **默认只标记，不剔除** | 否 |
+
+- L3 入口：诊断分析页「验证全部」/ 节点详情「严格验证」，或 `POST /api/nodes/verify`。
+- 非 HTTP/SOCKS 协议通过 per-node 端口落地后验证；未分配端口时返回 `skipped`，不会伪造结果。
+- 结果写入 `data/node_quality.json`，重启保留，可在诊断页点击行展开查看。
+
+---
+
+## 账号与分池
+
+- 存储：`data/accounts.json`，**凭据只存 bcrypt 哈希**，不回显、不写日志、不入导出。
+- 关系：**一用户单池**；用户不填分池则使用默认池（全部节点）。
+- 热生效：增删改立即作用于新连接，不重建核心、不打断在途连接。
+- 字段：`username`、`password`、`display_name`、`pool`、`enabled`、`expires_at`、`max_sessions`、`max_conns`、`note`、`credential_version`。
+- 分池字段：`name`、`nodes[]`（留空 = 全部）、`fallback`（`none` / `default_pool` / `direct`）、`enabled`、`note`。
+- 删除分池前需先迁移池内用户；删除用户不影响在途连接。
+
+> 旧的 `pool.user_pools`（按用户名绑定节点子集、写入 `config.yaml`）**已停用**：`PUT /api/pool/user-pools` 返回 `410 Gone`，`GET` 返回空的弃用响应。请改用「用户与分池」页。
+
+---
+
+## 可观测性
+
+### 指标
+
+`GET /api/metrics?window=1m|5m|1h`，`GET /api/metrics/stream`（SSE）。
+
+| 指标 | 含义 |
+|---|---|
+| `reroute_total` / `reroute_rate` | 改道次数 / 改道率（换到不同节点才计） |
+| `reroute_avg_ms` / `reroute_p95_ms` / `reroute_p99_ms` | 切换耗时（只统计改道成功样本） |
+| `client_visible_failure_rate` | 业务侧感知失败率（零感知核心验收指标） |
+| `circuit_transitions` / `node_evictions` / `node_recoveries` | 熔断迁移、摘除、恢复 |
+| `reload_disconnected_conns` | 重载导致的连接中断数（目标 0） |
+| `degrades` / `queue_depth` | 降级次数、排队深度 |
+
+面板提供 1m/5m/1h 窗口切换、改道趋势与耗时分布曲线、改道/熔断事件流。
+
+### 日志
+
+- 控制台日志页支持**级别（DEBUG/INFO/WARN/ERROR）+ 类别 + 关键字**检索。
+- 类别：`refresh`（来源计数与准入原因）、`verify`（逐节点拒绝明细，默认 DEBUG）、`access`（访问目标）、`reroute`、`circuit`。
+- 每次刷新固定输出一行 INFO 汇总：
+
+```
+[INFO][refresh] refresh done candidates=314 sources=fofa:300,free:15 admitted=2 admitted_by=fofa:2,free:0 deduped=1 rejected=score_below_min:180,timeout:90,mitm:25,authenticity:17
+```
+
+- 访问日志一条连接一行：客户端 IP、用户名/会话、目标域名或 IP:端口、协议、选中节点、结果、耗时。
+- 缓冲区有界（约 2000 条）并滚动覆盖，不落盘；`log_level` 控制默认阈值。
+- 日志中的 URL 会自动剥离 query（避免密钥泄露），但**目标域名按原样记录**。
+
+---
+
+## WebUI
+
+| 页面 | 内容 |
+|---|---|
+| 监控看板 | 节点表（成功率、熔断状态、改道数、摘除/恢复）、零感知指标卡、事件流、曲线、节点删除/探测/拉黑 |
+| 用户与分池 | 分池 CRUD、用户 CRUD（配额/到期/启停/改密）、变更审计 |
+| 会话路由 | 命名会话绑定与释放、扩展来源访问记录；旧分池入口已迁移 |
+| 节点配置 | 添加（URI / 按协议表单）、批量导入（Clash YAML / URL 列表 + 预览）、编辑、删除、重载核心 |
+| 诊断分析 | 节点质量分析（点击行展开全维度结果）、严格验证、GeoIP/稳定性图表 |
+| 控制台日志 | 结构化日志检索 + 原始控制台视图 |
+| 系统设置 | 监听、池、零感知参数、GeoIP、订阅、日志等 |
+
+---
+
+## API 摘要
+
+所有管理接口沿用面板登录鉴权（`/api/auth`）。
+
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| GET/POST | `/api/nodes/config` | 列出 / 新增节点 |
+| PUT/DELETE | `/api/nodes/config/{name}` | 修改 / 删除节点 |
+| POST | `/api/nodes/config/batch` | 批量添加（失败回滚） |
+| POST | `/api/nodes/preview` | 解析 Clash YAML 或 URL 列表并预览去重结果 |
+| GET | `/api/nodes/quality` | 严格验证质量档案 |
+| POST | `/api/nodes/verify` | 触发严格验证（单节点 / 批量 / `{"all":true}`） |
+| POST | `/api/nodes/probe-all` | 全量健康探测 |
+| POST | `/api/nodes/{tag}/probe` | 单节点探测 |
+| POST | `/api/nodes/{tag}/release` \| `/blacklist` | 手动解封 / 拉黑 |
+| GET/POST/PUT/DELETE | `/api/accounts[/users\|/pools]` | 账号与分池 CRUD |
+| GET | `/api/pool/user-pools` | 旧分池只读兼容（已弃用） |
+| GET | `/api/metrics`、`/api/metrics/stream` | 指标快照 / SSE |
+| GET | `/api/logs?level=&category=&q=` | 结构化日志 |
+| GET | `/api/debug` | 诊断快照（含质量结果） |
+| GET/PUT | `/api/settings` | 读取 / 保存核心设置（需重载生效） |
+| POST | `/api/reload` | 重载核心 |
+| GET | `/api/export` | 导出代理链接 |
+| GET | `/api/ext/status` \| `/api/ext/config` \| `/api/ext/refresh` | 扩展来源状态 / 配置 / 手动刷新 |
+
+---
+
+## 常用运维
 
 ```bash
-# Same session across new HTTP/HTTPS connections.
-curl --proxy 'http://wang.account01:1234@127.0.0.1:2323' https://example.com
+# 查看状态
+docker compose ps
+docker logs --tail 100 easy_proxies_ext
 
-# The same session over SOCKS5.
-curl --proxy 'socks5h://wang.account01:1234@127.0.0.1:2323' https://example.com
+# 修改 pool/sticky/management 等核心设置后
+# 面板点「重载核心」，或：
+curl -X POST http://127.0.0.1:9091/api/reload
+
+# 改 data/config.yaml 后同样需要重载
+# 账号、分池、日志级别不需要重载
 ```
 
-An unavailable, cooling-down, blacklisted, removed, or dial-failing bound node is replaced according to the pool's availability and retry policy. The new node becomes the session binding. A dial that fails through the bound node itself always buys one extra selection in that request, even with `retry_enabled: false`, because a dead pin is a binding error rather than a scheduling retry; if that attempt fails too the binding is kept so a single blip does not silently move the session to another exit. That node is also blacklisted on the spot — transport faults for `pool.blacklist_duration` (default 24h) instead of waiting for `pool.failure_threshold`, while 429/timeout failures only take their configured cooldown — so other sessions are no longer routed to it. This fixes the **upstream node**, not the node provider's public exit IP. Established tunnels are not migrated, and HTTP application errors do not cause replay of requests already sent.
+| 场景 | 是否重载 | 是否断连 |
+|---|---|---|
+| 账号 / 分池增删改 | 否 | 否 |
+| 节点增删改 | 是（手动） | 是，在途连接会断 |
+| 订阅刷新且节点集合不变 | 否（自动跳过） | 否 |
+| 订阅刷新且节点集合变化 | 是 | 是 |
+| 严格验证 / 健康探测 | 否 | 否 |
+| 日志级别、面板设置 | 否 | 否 |
 
-The fixed binding covers TCP connections (HTTP, CONNECT, and SOCKS5 CONNECT). SOCKS5 UDP can reuse a compatible TCP-bound node, but falls back for that request if necessary without changing the TCP binding; a fixed UDP exit is not guaranteed.
+---
 
-Bindings survive subscription refreshes and core reloads when the same upstream URI identity remains. They expire after the configured idle TTL and may be released when the session capacity is exceeded; a process restart clears all bindings. Idle time is renewed only by successful dials: failed attempts do not extend a binding, and traffic on an already-open tunnel does not either. Session routing requires `pool`/`hybrid` mode and a configured listener username. Set `session_enabled: false` to retain exact-username authentication only.
+## 升级与破坏性变更
 
-#### Legacy source-IP sticky port
+升级到本分支时请注意：
 
-`sticky.enabled: true` still opens the separate legacy entry (default `listener.port + 1`, usually `2324`). Its address and credentials reuse `listener`, and it pins the **client source IP** rather than a username session. For example, `http://wang:1234@127.0.0.1:2324` retains the old behavior. Multiple clients behind the same NAT share that IP-based binding. This option is independent of main-port session routing; `session_ttl` and `max_sessions` do not change the legacy IP binding lifecycle.
+1. **`mode` 字段已移除**，固定双栈；旧配置里的 `mode:` 会被静默忽略。
+2. **每个节点占用独立端口**（默认 24000 起），节点数超过端口范围会启动失败；宿主机默认不映射该范围。
+3. **`pool.user_pools` 已停用**，`PUT` 返回 410；分池迁移到「用户与分池」页（`accounts.json`）。
+4. **严格验证改为人工触发**，入池门槛仅为 `generate_204` 健康探测。
+5. **删除订阅/扩展来源的节点不持久**，下次刷新会重新出现。
+6. `pool.fallback: direct` 会使用真实出口 IP，请确认安全边界后再启用。
 
-See the [session routing guide (Chinese)](docs/session-routing.md) for lifecycle, compatibility, and troubleshooting details.
+---
 
-### Full Config Reference
+## 排障
 
-See [config.example.yaml](config.example.yaml) for the full documented configuration with all available options.
+| 现象 | 常见原因 |
+|---|---|
+| 免费池节点未入池 | `extension.freepool.enabled` 或 `external_api.enabled` 为 `false`；`base_url` 写成宿主 IP（容器内应为 `http://proxy-pool:5010`）；`get_path` 写成 `/all/`（当前只支持 `/get/`）；严格验证分数未达标 |
+| 启动报 `config.nodes cannot be empty` | 没有任何可用节点，且 `pool.fallback` 不是 `direct` |
+| 启动报端口分配失败 | 节点数超过 `multi_port.base_port` 起的可用端口范围 |
+| 面板能打开但代理不可用 | 节点全部处于黑名单/冷却；查看 `/api/debug` 与「池内全不可用」日志 |
+| 严格验证大量 `skipped` | 非 HTTP/SOCKS 协议需要 per-node 端口，检查双栈是否正常分配端口 |
+| 订阅刷新后配置回退 | 订阅刷新会以订阅结果为准；需要固定的节点请用内联或 `nodes.txt` |
 
-## GeoIP Region Routing
+---
 
-### Overview
+## 安全说明
 
-When GeoIP is enabled, Easy Proxies automatically classifies your proxy nodes by geographic region and provides a separate HTTP proxy endpoint that lets you route traffic through nodes in a specific country/region.
+- 面板密码为空时管理接口无鉴权，**生产环境必须设置 `management.password`**。
+- 代理凭据与测绘 API Key 只通过 `.env` 注入，仓库与日志中不出现明文。
+- `data/` 内含 `config.yaml`、`accounts.json`、`node_quality.json`、`nodes.txt`，请勿提交到版本库。
+- 日志会记录访问目标域名（按设计不脱敏），敏感业务请自行评估。
+- `skip_cert_verify: true` 会关闭上游证书校验，仅建议排障时临时使用。
 
-### Supported Regions
+---
 
-| Code | Region |
-|------|--------|
-| `jp` | Japan 🇯🇵 |
-| `kr` | South Korea 🇰🇷 |
-| `us` | United States 🇺🇸 |
-| `hk` | Hong Kong 🇭🇰 |
-| `tw` | Taiwan 🇹🇼 |
-| `sg` | Singapore 🇸🇬 |
-| `other` | All other regions |
-
-### Configuration
-
-```yaml
-geoip:
-  enabled: true
-  database_path: "./GeoLite2-Country.mmdb"
-  listen: "0.0.0.0"          # defaults to listener.address if omitted
-  port: 1221                  # defaults to listener.port if omitted
-  auto_update_enabled: true   # auto-update the GeoIP database
-  auto_update_interval: 24h   # check interval
-```
-
-The GeoIP router reuses the `listener.username` and `listener.password` for proxy authentication.
-
-Key behaviors:
-- The GeoIP database (MaxMind GeoLite2-Country) is **auto-downloaded** on first startup
-- Auto-update is enabled by default (checks every 24h) with hot-reload -- no restart needed
-- Node region classification happens automatically during startup and on every reload
-- Nodes whose IP cannot be resolved or looked up are placed in the `other` category
-
-### How to Use
-
-The GeoIP router is an HTTP proxy that listens on its own port. Select a
-region with the `X-Easyproxy-Region` proxy request header. This works for
-both regular HTTP requests and HTTPS CONNECT tunnels without changing the
-target URL.
+## 开发与测试
 
 ```bash
-# Route through Japanese nodes.
-curl --proxy http://user:pass@localhost:1221 \
-  --proxy-header 'X-Easyproxy-Region: jp' \
-  https://www.google.com
-
-# Route through US nodes.
-curl --proxy http://user:pass@localhost:1221 \
-  --proxy-header 'X-Easyproxy-Region: us' \
-  http://example.com
-
-# No header uses the global pool.
-curl --proxy http://user:pass@localhost:1221 https://www.google.com
-```
-
-Supported values are `jp`, `kr`, `us`, `hk`, `tw`, `sg`, and `other`.
-Unsupported values return `400 Bad Request`. The header is removed before a
-regular HTTP request is forwarded to the target server.
-
-#### Legacy Path Fallback
-
-Path-based region selection remains available for clients that actually send
-the path in the proxy request, including `CONNECT jp/example.com:443`.
-Standard HTTP proxy clients do not transmit a path included in the proxy URL,
-so a proxy URL such as `http://localhost:1221/jp/` cannot select a region.
-Use a proxy-specific header facility instead.
-
-### How It Works
-
-1. On startup, each node's server IP is resolved and looked up in the MaxMind GeoLite2-Country database
-2. Nodes are grouped into per-region pools (`pool-jp`, `pool-kr`, `pool-us`, etc.) with independent health checking
-3. The GeoIP router listens on its own port and selects a region from a proxy request header
-4. Matching requests are routed through the corresponding region pool; unmatched requests use the global pool
-5. Each region pool uses the same scheduling algorithm configured in the `pool` section
-6. DNS lookup results are cached to avoid repeated resolution on reload
-
-## Supported Protocols
-
-| Protocol | URI Schemes | Transport |
-|----------|-------------|-----------|
-| VLESS | `vless://` | TCP, WS, HTTP/2, gRPC, HTTPUpgrade; TLS/Reality/uTLS |
-| VMess | `vmess://` | WS, HTTP/2, gRPC, HTTPUpgrade; TLS/uTLS |
-| Trojan | `trojan://` | WS, HTTP/2, gRPC, HTTPUpgrade; TLS/Reality/uTLS |
-| Shadowsocks | `ss://`, `shadowsocks://` | Direct; SIP002 and legacy whole-payload Base64 formats |
-| Hysteria2 | `hysteria2://`, `hy2://` | QUIC-based |
-| TUIC | `tuic://` | QUIC-based |
-| AnyTLS | `anytls://` | TLS |
-| SOCKS5 | `socks5://`, `socks5h://`, `socks://` | Direct |
-| HTTP | `http://`, `https://` | Direct |
-
-## Node Sources
-
-### Inline Nodes
-
-```yaml
-nodes:
-  - uri: "vless://uuid@server:443?security=tls&type=ws&path=/path#Name"
-  - uri: "ss://base64(method:password@server:port)#Name"
-```
-
-### Nodes File
-
-```yaml
-nodes_file: nodes.txt
-```
-
-One proxy URI per line. Lines starting with `#` are comments.
-
-### Subscriptions
-
-```yaml
-subscriptions:
-  - "https://provider.example/api?token=xxx"
-
-subscription_refresh:
-  enabled: true
-  interval: 1h
-  timeout: 30s
-  fetch_concurrency: 16
-```
-
-Supports Base64, plain text, and Clash YAML formats. When subscriptions are configured, fetched nodes are written to `nodes_file`. Subscription changes trigger automatic hot-reload without restart.
-
-**Multi-source Node Merging**: When both `nodes` and `subscriptions` are configured:
-- Inline nodes (defined in `nodes` array) and subscription nodes are merged together
-- Subscription updates preserve inline nodes instead of overwriting them
-- Node order: inline nodes first, followed by subscription nodes
-- Each node's source (inline/subscription) is tracked and displayed in the management UI
-
-**Stable Ports** (`multi-port`/`hybrid`): each node is identified by a stable key derived from its URI (ignoring the display name and parameter order), so a node keeps the same local port even when the subscription renames or reorders it. Assignments are saved to `node_ports.json` next to `config.yaml` and restored on restart.
-
-For encoded VMess JSON links, the display-name `ps` field, top-level JSON key ordering, and supported base64 encoding variants are also excluded from identity differences. Older port-map keys are automatically normalized on load, preserving existing assignments when upgrading; do not delete `node_ports.json` just to adopt the new identity format.
-
-## WebUI Dashboard
-
-Access at `http://your-server:9091` (configurable via the `management` section).
-
-Features:
-
-- **Dashboard**: Proxy connection shortcuts, real-time node status, traffic charts, region availability, latency monitoring, connectivity probes, and node exports; node search and status filters
-- **Session Routing**: Generate a session ID and HTTP/SOCKS5 URL, copy the full URL or curl command, inspect bindings, and reset one or all named sessions. Previews and startup logs mask passwords; copied URLs contain the actual proxy credentials
-- **Node Config**: Add/edit/delete inline nodes, with search and on-demand 300-row batches
-- **Diagnostics**: Node statistics and probe timelines, with search and on-demand 300-row batches
-- **Console**: Application logs from the bounded in-memory buffer; polling pauses when the tab is hidden
-- **Settings**: Edit common runtime settings and subscription URLs from the browser; changes persist to `config.yaml`
-
-The dashboard and session page adapt to mobile screens. Current node health follows the backend availability flags rather than historical failure totals; failed operations display errors instead of reporting success.
-
-When `management.password` is empty, authentication is bypassed.
-
-Changing the management password takes effect immediately and invalidates existing login sessions. Sign in again before applying other pending changes. Most proxy/runtime settings still require a reload, which interrupts existing connections. Manual subscription refresh remains available when periodic refresh is disabled; a failed/empty provider keeps the previous subscription set and reports an error.
-
-## Management API
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/auth` | GET, POST, DELETE | Authentication status, login, logout |
-| `/api/settings` | GET, PUT | Read/update settings |
-| `/api/nodes` | GET | List all nodes with status |
-| `/api/nodes/{tag}/probe` | POST | Test node connectivity |
-| `/api/nodes/{tag}/blacklist` | POST | Manually blacklist a node |
-| `/api/nodes/{tag}/release` | POST | Release node from blacklist |
-| `/api/nodes/probe-all` | POST | Probe all nodes (SSE stream) |
-| `/api/export` | GET | Export local proxy URLs; healthy nodes by default, `all=true` for all nodes, `scheme=http/socks5/all` |
-| `/api/subscription/config` | GET, PUT | Manage subscription URLs |
-| `/api/subscription/status` | GET | Check subscription status |
-| `/api/subscription/refresh` | POST | Trigger manual refresh |
-| `/api/nodes/config` | GET, POST, PUT, DELETE | CRUD for node config |
-| `/api/proxy-sessions` | GET, DELETE | List named-session bindings or reset all bindings |
-| `/api/proxy-sessions/{id}` | DELETE | Reset one binding; `id` is the full username, e.g. `wang.account01` |
-| `/api/proxy-sessions/links` | POST | Generate an HTTP/SOCKS5 URL from `session_id` and `scheme`, without connecting or binding a node |
-| `/api/reload` | POST | Reload sing-box instance |
-
-Exported URLs contain actual proxy credentials. Exports and session-link generation avoid wildcard listener addresses and correctly encode credentials and IPv6 hosts; configure `external_ip` when the client-facing host differs from the management host. Generate fixed-session URLs on the Session Routing page rather than treating node exports as session registrations.
-
-## Docker Deployment
-
-### docker-compose.yml
-
-The default setup uses host networking (recommended for automatic port management). Config directory is auto-generated on first run:
-
-```yaml
-services:
-  easy_proxies:
-    image: ghcr.io/jasonwong1991/easy_proxies:latest
-    container_name: easy_proxies
-    restart: unless-stopped
-    network_mode: host
-    user: "${UID:-10001}:${GID:-10001}"
-    volumes:
-      - ./data:/etc/easy_proxies
-      - ./logs:/app/logs
-```
-
-### Important Notes
-
-- **Zero-config**: When mapping a directory, `config.yaml` and `nodes.txt` are auto-generated on first run.
-- **Permissions**: Use `--user $(id -u):$(id -g)` to match your host user for file access.
-- **Multi-platform**: Supports amd64 and arm64 architectures.
-- **Reload**: `/api/reload` and subscription refresh will interrupt active connections.
-
-### Ports
-
-| Port | Usage |
-|------|-------|
-| 2323 | Main HTTP/SOCKS5 pool entry: bare username for normal scheduling, `username.sessionID` for a fixed-node session |
-| 9091 | WebUI and Management API |
-| 9092 | Internal Clash API (localhost only, traffic stats) |
-| 1221 | GeoIP region router (when enabled, configurable) |
-| 24000+ | Multi-port mode (one per node) |
-
-In `multi-port`/`hybrid` mode, per-node ports are persisted to `node_ports.json` (next to `config.yaml`) and restored on restart, so each node keeps a stable port across restarts and subscription refreshes. Delete this file to force a clean reassignment.
-
-## Troubleshooting
-
-### Configuration Persistence Issues
-
-**Problem**: Configuration changes made via WebUI are lost after container restart or rebuild.
-
-**Quick Diagnosis**:
-```bash
-# Check your data directory layout and permissions
-ls -la data/
-[ -f data/config.yaml ]  || echo "missing data/config.yaml"
-[ -d data/config.yaml ]   && echo "BUG: data/config.yaml is a directory (see Quick Start note)"
-[ -d data/nodes.txt ]    && echo "BUG: data/nodes.txt is a directory (see Quick Start note)"
-```
-
-**Common Causes and Solutions**:
-
-1. **File Permission Issues**:
-   ```bash
-   # Fix permissions
-   chown -R $(id -u):$(id -g) data
-   chmod 755 data
-   chmod 644 data/config.yaml data/nodes.txt
-   ```
-
-2. **Incorrect Volume Mapping**:
-   - Ensure `docker-compose.yml` uses `./data:/etc/easy_proxies`
-   - Do not use absolute paths or incorrect directories
-
-3. **Missing UID/GID on Startup**:
-   ```bash
-   # Correct startup command
-   UID=$(id -u) GID=$(id -g) docker-compose up -d
-   ```
-
-**Verify Configuration Persistence**:
-```bash
-# Check file modification times
-ls -lh data/config.yaml data/nodes.txt
-
-# Check container logs for save confirmations
-docker-compose logs -f | grep "Saved"
-```
-
-**Detailed Troubleshooting**: See [docs/troubleshooting-persistence.md](docs/troubleshooting-persistence.md)
-
-### Docker Permission Issues
-
-**Problem**: When using `docker-compose.yml` with volume mapping, you may encounter permission errors like "permission denied" or "cannot write to /etc/easy_proxies".
-
-**Root Cause**: The container runs as a non-root user (specified by `user: "${UID:-10001}:${GID:-10001}"` in docker-compose.yml), but the mounted host directory may have different ownership.
-
-**Solutions**:
-
-1. **Use docker compose with a directory mount (Recommended)**:
-   ```bash
-   mkdir -p data logs
-   sudo chown -R $(id -u):$(id -g) data logs
-   docker compose up -d
-   ```
-   This maps the whole `./data` directory; `config.yaml` and `nodes.txt` are auto-generated as files on first run.
-
-2. **Pre-create config files** (alternative, for file-level mounts):
-   ```bash
-   mkdir -p data
-   cp config.example.yaml data/config.yaml
-   touch data/nodes.txt
-   chown -R $(id -u):$(id -g) data
-   docker compose up -d
-   ```
-
-**For docker run command**:
-```bash
-mkdir -p data logs
-chmod -R u+w data logs
-docker run --user $(id -u):$(id -g) \
-  -v $(pwd)/data:/etc/easy_proxies \
-  -v $(pwd)/logs:/app/logs \
-  --network host \
-  ghcr.io/jasonwong1991/easy_proxies:latest
-```
-
-### Other Common Issues
-
-- **"Config file not found"**: Ensure `config.yaml` exists in the mounted directory
-- **"Cannot bind port"**: Check if the port is already in use by another service
-- **"All nodes failed health check"**: Verify your proxy URIs are correct and the upstream servers are reachable
-- **"Proxy was working but suddenly stopped"**: Check if the node is blacklisted (appears after 3 consecutive failures, default duration: 24h)
-  - **Solution 1**: Release via WebUI - click the "Release" button next to the node
-  - **Solution 2**: Release via API - `POST http://localhost:9091/api/nodes/{tag}/release`
-  - **Solution 3**: Reduce blacklist duration in `config.yaml`:
-    ```yaml
-    pool:
-      blacklist_duration: 1h  # Change from default 24h to 1h
-    ```
-  - Check logs for blacklist events: `docker compose logs | grep "BLACKLISTED"`
-  - **Note**: transient failures (HTTP 429, timeouts, connection resets, 503) never reach the 24h blacklist at all -- they do not count toward `failure_threshold` and instead apply a short cooldown (`transient_cooldown`, default `60s`). If a node is rate-limited often, give 429 its own longer cooldown so the pool skips that node for hours instead of a minute:
-    ```yaml
-    pool:
-      transient_cooldown: 60s   # timeout / connection reset / 503
-      rate_limit_cooldown: 2h   # HTTP 429 -- avoid this node for 2 hours
-    ```
-    - A node on cooldown is skipped, not blacklisted -- it rejoins the pool automatically once the cooldown expires, with no manual action needed.
-    - If *every* node in a pool is cooling down at once, requests fail until the earliest cooldown expires, rather than falling back to a node known to be rate-limited. Choose `rate_limit_cooldown` with your pool size in mind -- a long value on a small pool means a real outage window.
-    - Manual release (the WebUI 解封 button, or `POST /api/nodes/{tag}/release`) clears a live cooldown immediately if you need the node back right away.
-
-## Changelog
-
-See [CHANGELOG.md](CHANGELOG.md) for version history.
-
-## Development
-
-Use **Go 1.26.10 or newer** (see `go.mod`) and Node.js 24 for fixture tests. The Docker builder is pinned to Go 1.26.10. The publication workflow requires the checks below before building/publishing images; actual run results are recorded in GitHub Actions:
-
-```bash
-go test -count=1 ./...
-go test -race -count=1 ./...
+gofmt -l internal cmd
 go vet ./...
-FEATURE_TAGS='with_utls with_quic with_grpc with_wireguard with_gvisor with_clash_api'
-go test -count=1 -tags "$FEATURE_TAGS" ./...
-sh -n entrypoint.sh
-node --test scripts/test-ui.mjs scripts/test-entrypoint.mjs
+go test ./... -count=1
+go test -race ./... -count=1          # 需要 C 编译器
+node --test scripts/test-ui.mjs       # 前端 fixture（无需浏览器）
 ```
 
-For changes affecting runtime behavior, add loopback/temporary-directory regressions rather than testing against live subscriptions. Optional browser tests are in `scripts/test-ui-browser.mjs` (Playwright and Chrome required).
+- 前端是单文件原生 JS（`internal/monitor/assets/index.html`），通过 `go:embed` 打包。
+- 新增行为请先补合同测试，再改路由/刷新语义。
 
-See the [project review and iteration roadmap](docs/project-review-2026-10-11.md) for completed fixes, benchmark scope, upgrade notes, and remaining work. Directory mounts remain recommended for atomic configuration replacement; individual-file mounts use a locked in-place fallback with weaker crash guarantees.
+## 致谢
 
-## Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=jasonwong1991/easy_proxies&type=Date)](https://star-history.com/#jasonwong1991/easy_proxies&Date)
-
-## Acknowledgements
-
-This project is built on top of [sing-box](https://github.com/SagerNet/sing-box) — a universal proxy platform that powers all the underlying protocol implementations and transports. Huge thanks to the SagerNet team and contributors for their outstanding work.
-
-## License
-
-MIT License
+- [sing-box](https://github.com/SagerNet/sing-box)：代理内核
+- [jasonwong1991/easy_proxies](https://github.com/jasonwong1991/easy_proxies)：原始项目
+- [jhao104/proxy_pool](https://github.com/jhao104/proxy_pool)：免费代理池组件

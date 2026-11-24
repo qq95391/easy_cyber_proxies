@@ -19,7 +19,6 @@ GeoLite2-Country.mmdb
 
 # Logs
 *.log
-logs/
 
 # IDE and editor
 .idea/
@@ -53,4 +52,4 @@ coverage.html
 .env.*
 !.env.example
 data/
-logs/
+/logs/

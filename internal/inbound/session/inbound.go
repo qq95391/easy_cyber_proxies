@@ -35,6 +35,9 @@ var errAuthentication = errors.New("proxy authentication failed")
 type Options struct {
 	option.HTTPMixedInboundOptions
 	SessionEnabled bool
+	// IdleTimeout closes client connections that transfer zero bytes for this
+	// long after the handshake. Zero disables reaping; stats keep running.
+	IdleTimeout time.Duration
 }
 
 func Register(registry *inbound.Registry) {
@@ -54,6 +57,7 @@ type Inbound struct {
 }
 
 func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options Options) (adapter.Inbound, error) {
+	ConfigureIdleTimeout(options.IdleTimeout)
 	h := &Inbound{
 		Adapter:        inbound.NewAdapter(Type, tag),
 		router:         uot.NewRouter(router, logger),
@@ -91,6 +95,9 @@ func (h *Inbound) Start(stage adapter.StartStage) error {
 func (h *Inbound) Close() error { return common.Close(h.listener, h.tlsConfig) }
 
 func (h *Inbound) NewConnectionEx(ctx context.Context, conn net.Conn, metadata adapter.InboundContext, onClose N.CloseHandlerFunc) {
+	// Track activity for the whole connection lifetime, including the handshake
+	// and any tunnel handed to the router.
+	conn = wrapIdleConn(conn)
 	owned, err := h.newConnection(ctx, conn, metadata, onClose)
 	if !owned {
 		conn.Close()

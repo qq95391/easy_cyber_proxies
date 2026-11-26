@@ -89,6 +89,7 @@ node --test scripts/test-ui.mjs    # 前端 fixture
 |---|---|---|
 | `listener.address` / `port` | `0.0.0.0:2323` | 共享入口，HTTP 与 SOCKS5 同端口 |
 | `listener.username` / `password` | — | 兼容用的全局凭据；独立账号启用后仍可作为旧客户端凭据 |
+| `listener.idle_timeout` | `20m` | 握手完成后双向零字节持续空闲多久关闭连接；`0` 关闭该机制。只回收完全静默的连接 |
 | `multi_port.address` | `0.0.0.0` | per-node 监听地址 |
 | `multi_port.base_port` | `24000` | per-node 起始端口，按节点数顺延 |
 | `multi_port.username` / `password` | — | per-node 入口默认凭据 |
@@ -251,6 +252,10 @@ http(s)://[user:pass@]host:port#name
 ```
 
 - 访问日志一条连接一行：客户端 IP、用户名/会话、目标域名或 IP:端口、协议、选中节点、结果、耗时。
+- 连接生命周期日志（类别 `conn`）：
+  - `connection open`（DEBUG）：`conn_id`、`goroutine`、`peer`、`active`、`total`
+  - `connection closed` / `connection idle`（INFO / WARN）：同上，附 `duration_ms`、`idle_ms`
+  - 每 60 秒一条汇总（INFO）：`connections active=N total=M`，可直接看当前连接数与累计连接总数
 - 缓冲区有界（约 2000 条）并滚动覆盖，不落盘；`log_level` 控制默认阈值。
 - 日志中的 URL 会自动剥离 query（避免密钥泄露），但**目标域名按原样记录**。
 

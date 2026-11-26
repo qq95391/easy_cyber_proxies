@@ -481,6 +481,7 @@ func buildPoolInbound(cfg *config.Config) (option.Inbound, error) {
 			Options: &session.Options{
 				HTTPMixedInboundOptions: *inboundOptions,
 				SessionEnabled:          true,
+				IdleTimeout:             cfg.Listener.IdleTimeoutDuration(),
 			},
 		}, nil
 	}

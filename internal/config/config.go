@@ -74,6 +74,26 @@ type ListenerConfig struct {
 	Port     uint16 `yaml:"port"`
 	Username string `yaml:"username"`
 	Password string `yaml:"password"`
+	// IdleTimeout bounds how long a fully idle (zero bytes both ways) client
+	// connection may live after the handshake. Empty means 20m; "0" or "0s"
+	// disables the reaper. Expressed as a string to avoid yaml duration
+	// decoding differences.
+	IdleTimeout string `yaml:"idle_timeout,omitempty"`
+}
+
+// IdleTimeoutDuration resolves the configured post-handshake idle timeout.
+// An empty value falls back to 20 minutes; non-positive or unparsable values
+// disable reaping (0) rather than silently inventing a timeout.
+func (c ListenerConfig) IdleTimeoutDuration() time.Duration {
+	raw := strings.TrimSpace(c.IdleTimeout)
+	if raw == "" {
+		return 20 * time.Minute
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return 0
+	}
+	return d
 }
 
 // StickyConfig controls authenticated username.session routing on the main

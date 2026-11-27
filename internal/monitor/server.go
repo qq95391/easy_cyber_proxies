@@ -116,6 +116,7 @@ type Server struct {
 	subRefresher SubscriptionRefresher
 	nodeMgr      NodeManager
 	extHandler   http.Handler
+	extRejects   func() any
 }
 
 // NewServer constructs a server; it can be nil when disabled.
@@ -157,6 +158,7 @@ func NewServer(cfg Config, mgr *Manager, logger *log.Logger) *Server {
 	mux.HandleFunc("/api/nodes/verify", s.withAuth(s.handleVerifyNodes))
 	mux.HandleFunc("/api/nodes/preview", s.withAuth(s.handleNodePreview))
 	mux.HandleFunc("/api/nodes/config/batch", s.withAuth(s.handleNodeBatch))
+	mux.HandleFunc("/api/nodes/config/batch-delete", s.withAuth(s.handleNodeBatchDelete))
 	mux.HandleFunc("/api/nodes/probe-all", s.withAuth(s.handleProbeAll))
 	mux.HandleFunc("/api/nodes/", s.withAuth(s.handleNodeAction))
 	mux.HandleFunc("/api/debug", s.withAuth(s.handleDebug))
@@ -167,6 +169,7 @@ func NewServer(cfg Config, mgr *Manager, logger *log.Logger) *Server {
 	mux.HandleFunc("/api/reload", s.withAuth(s.handleReload))
 	mux.HandleFunc("/api/traffic", s.withAuth(s.handleTraffic))
 	mux.HandleFunc("/api/logs", s.withAuth(s.handleLogs))
+	mux.HandleFunc("/api/ext/rejects", s.withAuth(s.handleExtRejects))
 	mux.HandleFunc("/api/ext/", s.withAuth(s.handleExtension))
 	mux.HandleFunc("/api/pool/user-pools", s.withAuth(s.handleUserPools))
 	mux.HandleFunc("/api/accounts", s.withAuth(s.handleAccounts))
@@ -201,6 +204,34 @@ func (s *Server) SetExtensionHandler(h http.Handler) {
 		s.extHandler = h
 		s.cfgMu.Unlock()
 	}
+}
+
+// SetExtensionRejects injects the rejection-ring reader used by the diagnostics
+// endpoint. It is intentionally decoupled from the extension HTTP handler so
+// rejection details stay available regardless of log level.
+func (s *Server) SetExtensionRejects(reader func() any) {
+	if s == nil {
+		return
+	}
+	s.cfgMu.Lock()
+	s.extRejects = reader
+	s.cfgMu.Unlock()
+}
+
+func (s *Server) handleExtRejects(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	s.cfgMu.RLock()
+	reader := s.extRejects
+	s.cfgMu.RUnlock()
+	if reader == nil {
+		writeStatusJSON(w, http.StatusNotImplemented, map[string]any{"error": "extension subsystem disabled"})
+		return
+	}
+	writeJSON(w, map[string]any{"rejects": reader()})
 }
 
 func (s *Server) handleExtension(w http.ResponseWriter, r *http.Request) {

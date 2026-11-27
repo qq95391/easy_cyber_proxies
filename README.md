@@ -206,6 +206,8 @@ http(s)://[user:pass@]host:port#name
 | **L3 严格验证** | **人工触发** | 全维度评分（出口 IP、匿名度、真实性、MITM、延迟、带宽） | **默认只标记，不剔除** | 否 |
 
 - L3 入口：诊断分析页「验证全部」/ 节点详情「严格验证」，或 `POST /api/nodes/verify`。
+- 被拒绝的候选进入**负缓存**，TTL 内不再重拨：timeout 10 分钟、不可达 30 分钟、低分 1 小时、MITM/真实性 24 小时。
+- 抓取失败的来源按 1m→2m→…→1h 指数退避重试，不会在每个调度周期重复拉取。
 - 非 HTTP/SOCKS 协议通过 per-node 端口落地后验证；未分配端口时返回 `skipped`，不会伪造结果。
 - 结果写入 `data/node_quality.json`，重启保留，可在诊断页点击行展开查看。
 
@@ -238,6 +240,8 @@ http(s)://[user:pass@]host:port#name
 | `circuit_transitions` / `node_evictions` / `node_recoveries` | 熔断迁移、摘除、恢复 |
 | `reload_disconnected_conns` | 重载导致的连接中断数（目标 0） |
 | `degrades` / `queue_depth` | 降级次数、排队深度 |
+| `verify_inflight` / `verify_dial_abandoned` / `verify_dial_harvested` | 严格验证的进行中拨号、被放弃拨号、已回收 socket |
+| `open_fds` | 进程当前文件描述符数（Linux 读取 `/proc/self/fd`；超过 4096 会打印告警） |
 
 面板提供 1m/5m/1h 窗口切换、改道趋势与耗时分布曲线、改道/熔断事件流。
 
@@ -284,6 +288,8 @@ http(s)://[user:pass@]host:port#name
 | GET/POST | `/api/nodes/config` | 列出 / 新增节点 |
 | PUT/DELETE | `/api/nodes/config/{name}` | 修改 / 删除节点 |
 | POST | `/api/nodes/config/batch` | 批量添加（失败回滚） |
+| POST | `/api/nodes/config/batch-delete` | 按名称或无效条件批量删除，支持 `dry_run` 预览 |
+| GET | `/api/ext/rejects` | 最近的逐节点验证拒绝明细（含原因、分数、错误） |
 | POST | `/api/nodes/preview` | 解析 Clash YAML 或 URL 列表并预览去重结果 |
 | GET | `/api/nodes/quality` | 严格验证质量档案 |
 | POST | `/api/nodes/verify` | 触发严格验证（单节点 / 批量 / `{"all":true}`） |

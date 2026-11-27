@@ -362,26 +362,78 @@ func buildTransport(u *url.URL, timeout time.Duration) (*http.Transport, error) 
 		base.Proxy = http.ProxyURL(u)
 		return base, nil
 	case "socks5", "socks5h", "socks":
-		dialer, err := proxy.FromURL(u, proxy.Direct)
-		if err != nil {
-			return nil, fmt.Errorf("socks dialer: %w", err)
+		var auth *proxy.Auth
+		if u.User != nil {
+			password, _ := u.User.Password()
+			auth = &proxy.Auth{User: u.User.Username(), Password: password}
+		}
+		proxyAddr := u.Host
+		if !strings.Contains(proxyAddr, ":") {
+			proxyAddr = net.JoinHostPort(proxyAddr, "1080")
 		}
 		base.Proxy = nil
 		base.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			dialCtx, cancel := context.WithTimeout(ctx, timeout)
+			defer cancel()
+			// Keep a handle on the underlying TCP socket: the SOCKS5 handshake
+			// runs inside proxy.Dialer.Dial and honours no context, so closing
+			// this socket is the only way to abort it on cancellation.
+			var raw net.Conn
+			var rawMu sync.Mutex
+			forward := dialFunc(func(network2, addr2 string) (net.Conn, error) {
+				conn, err := (&net.Dialer{}).DialContext(dialCtx, network2, addr2)
+				if err == nil {
+					rawMu.Lock()
+					raw = conn
+					rawMu.Unlock()
+				}
+				return conn, err
+			})
+			dialer, err := proxy.SOCKS5("tcp", proxyAddr, auth, forward)
+			if err != nil {
+				return nil, fmt.Errorf("socks dialer: %w", err)
+			}
 			type outcome struct {
 				conn net.Conn
 				err  error
 			}
 			ch := make(chan outcome, 1)
+			verifyDialInflight.Add(1)
 			go func() {
 				c, e := dialer.Dial(network, addr)
 				ch <- outcome{c, e}
 			}()
+			// harvest drains the dial result and closes a connection that
+			// arrived after the caller gave up. Without this the socket stays
+			// ESTABLISHED forever (GC never closes file descriptors).
+			harvest := func() {
+				go func() {
+					o := <-ch
+					verifyDialInflight.Add(-1)
+					if o.conn != nil {
+						_ = o.conn.Close()
+						verifyDialHarvested.Add(1)
+					}
+				}()
+			}
 			select {
 			case o := <-ch:
+				verifyDialInflight.Add(-1)
+				if o.conn != nil && ctx.Err() != nil {
+					_ = o.conn.Close()
+					verifyDialHarvested.Add(1)
+					return nil, ctx.Err()
+				}
 				return o.conn, o.err
-			case <-ctx.Done():
-				return nil, ctx.Err()
+			case <-dialCtx.Done():
+				verifyDialLeaks.Add(1)
+				rawMu.Lock()
+				if raw != nil {
+					_ = raw.Close()
+				}
+				rawMu.Unlock()
+				harvest()
+				return nil, dialCtx.Err()
 			}
 		}
 		return base, nil

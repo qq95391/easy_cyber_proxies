@@ -935,6 +935,7 @@
           <div style="display:flex; gap: 10px;">
             <button class="btn btn-primary" onclick="showAddNodeModal()"><svg fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><use href="#i-plus"/></svg> 添加节点</button>
             <button class="btn" onclick="showNodeImportModal()">批量导入</button>
+            <button class="btn" onclick="cleanupInvalidNodes()">清理无效节点</button>
             <button class="btn btn-warning" onclick="triggerReload()" id="reloadBtn" >重载核心</button>
           </div>
         </div>
@@ -2711,6 +2712,28 @@
         closeModal('nodeImportOverlay');
         loadConfigNodes();
       } catch (e) { status.textContent = e.message || '提交失败'; }
+    }
+
+    async function cleanupInvalidNodes() {
+      const payload = {filter: {blacklisted: true, unreachable: true, below_score: true, min_score: 40}, dry_run: true};
+      try {
+        const preview = await apiFetch('/api/nodes/config/batch-delete', {
+          method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload),
+        });
+        const pd = await preview.json();
+        if (pd.error) { showToast(pd.error, 'error'); return; }
+        if (!pd.count) { showToast('没有匹配到无效节点'); return; }
+        if (!confirm(`将删除 ${pd.count} 个无效节点（黑名单 / 不可达 / 严格验证低分）。删除后需重载核心生效，确认？`)) return;
+        const r = await apiFetch('/api/nodes/config/batch-delete', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({filter: payload.filter, dry_run: false}),
+        });
+        const d = await r.json();
+        if (d.error) { showToast(d.error, 'error'); return; }
+        const failed = (d.failed || []).length;
+        showToast(`已删除 ${d.deleted || 0} 个节点${failed ? `，失败 ${failed} 个` : ''}，请重载核心`);
+        loadConfigNodes();
+      } catch (e) { showToast(e.message || '清理失败', 'error'); }
     }
 
     async function deleteNode(name) {

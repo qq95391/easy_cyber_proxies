@@ -80,8 +80,18 @@ type Orchestrator struct {
 	outcomes    []source.Outcome
 	lastRefresh time.Time
 	lastError   string
+	// lastFetch is the last *attempt* per provider; lastSuccess only advances
+	// on a successful fetch. Splitting them keeps a failing source from being
+	// retried on every scheduler tick while still backing off exponentially.
 	lastFetch   map[string]time.Time
-	running     bool
+	lastSuccess map[string]time.Time
+	failStreak  map[string]int
+	// negCache suppresses re-dialing candidates that already failed, keyed by
+	// node identity, with a reason-specific TTL.
+	negCache map[string]negEntry
+	// rejects keeps a bounded ring of per-node rejection details for the API.
+	rejects []RejectRecord
+	running bool
 
 	refreshMu sync.Mutex
 	ctx       context.Context
@@ -107,13 +117,16 @@ func New(cfg *config.Config) *Orchestrator {
 	ext := cfg.Extension
 	ext.Mapping.Presets = source.EnsureMappingPresets(ext.Mapping.Presets)
 	return &Orchestrator{
-		cfg:       cfg,
-		ext:       ext,
-		registry:  buildRegistry(ext),
-		verifier:  verify.New(ext.Verification),
-		results:   make(map[string]verify.Result),
-		failures:  make(map[string]int),
-		lastFetch: make(map[string]time.Time),
+		cfg:         cfg,
+		ext:         ext,
+		registry:    buildRegistry(ext),
+		verifier:    verify.New(ext.Verification),
+		results:     make(map[string]verify.Result),
+		failures:    make(map[string]int),
+		lastFetch:   make(map[string]time.Time),
+		lastSuccess: make(map[string]time.Time),
+		failStreak:  make(map[string]int),
+		negCache:    make(map[string]negEntry),
 	}
 }
 
@@ -237,8 +250,32 @@ func (o *Orchestrator) intervalFor(name string, ext config.ExtensionConfig) time
 func (o *Orchestrator) due(name string, ext config.ExtensionConfig) bool {
 	o.mu.RLock()
 	last := o.lastFetch[name]
+	streak := o.failStreak[name]
 	o.mu.RUnlock()
-	return time.Since(last) >= o.intervalFor(name, ext)
+	if last.IsZero() {
+		return true
+	}
+	interval := o.intervalFor(name, ext)
+	if streak > 0 {
+		// A failing source retries on a short, growing backoff instead of
+		// hammering the provider on every scheduler tick.
+		if backoff := retryBackoff(streak); backoff < interval {
+			interval = backoff
+		}
+	}
+	return time.Since(last) >= interval
+}
+
+// retryBackoff grows 1m→2m→…→1h for consecutive failures.
+func retryBackoff(streak int) time.Duration {
+	d := time.Minute
+	for i := 1; i < streak && d < time.Hour; i++ {
+		d *= 2
+	}
+	if d > time.Hour {
+		d = time.Hour
+	}
+	return d
 }
 
 // RefreshNow forces a full collection, verification and publication.
@@ -262,26 +299,28 @@ func (o *Orchestrator) refresh(ctx context.Context, filter func(source.Provider)
 		log.Printf("[extension] cache write: %v", err)
 	}
 
-	now := time.Time{}
-	for _, out := range collection.Outcomes {
-		if out.FetchedAt != "" {
-			if parsed, err := time.Parse(time.RFC3339, out.FetchedAt); err == nil && parsed.After(now) {
-				now = parsed
-			}
-		}
-	}
+	attempt := time.Now()
 	o.mu.Lock()
 	o.candidates = len(collection.Nodes)
 	o.admitted = append([]config.NodeConfig(nil), admitted...)
 	o.outcomes = append([]source.Outcome(nil), collection.Outcomes...)
-	if !now.IsZero() {
-		o.lastRefresh = now
-		for _, out := range collection.Outcomes {
-			if out.FetchedAt != "" && out.Error == "" {
-				o.lastFetch[out.Provider] = now
-			}
+	// Record the attempt regardless of outcome: only successful fetches reset
+	// the backoff, but every attempt moves the due clock so a failing provider
+	// cannot be refetched on every scheduler tick.
+	o.lastRefresh = attempt
+	for _, out := range collection.Outcomes {
+		if out.Provider == "" {
+			continue
+		}
+		o.lastFetch[out.Provider] = attempt
+		if out.Error == "" {
+			o.lastSuccess[out.Provider] = attempt
+			o.failStreak[out.Provider] = 0
+		} else {
+			o.failStreak[out.Provider]++
 		}
 	}
+	o.pruneNegCacheLocked(attempt)
 	o.lastError = ""
 	runtime := o.runtime
 	o.mu.Unlock()
@@ -325,6 +364,25 @@ func (o *Orchestrator) verifyAndFilter(ctx context.Context, nodes []config.NodeC
 	if !ext.Verification.Enabled {
 		return append([]config.NodeConfig(nil), nodes...), reasons
 	}
+	// Negative cache: a candidate that just timed out or was rejected is not
+	// re-dialed until its TTL expires. This is what stops one bad candidate
+	// from generating a fresh leak on every refresh round.
+	now := time.Now()
+	pending := make([]config.NodeConfig, 0, len(nodes))
+	o.mu.Lock()
+	for _, n := range nodes {
+		key := n.NodeKey()
+		if entry, ok := o.negCache[key]; ok {
+			if now.Before(entry.until) {
+				reasons["cached_"+entry.reason]++
+				continue
+			}
+			delete(o.negCache, key)
+		}
+		pending = append(pending, n)
+	}
+	o.mu.Unlock()
+	nodes = pending
 	portMap := map[string]uint16{}
 	o.mu.RLock()
 	runtime := o.runtime
@@ -368,11 +426,12 @@ func (o *Orchestrator) verifyAndFilter(ctx context.Context, nodes []config.NodeC
 		if j.res.MITMSuspected && actionRejects(mitmCfg.Action) {
 			pass = false
 		}
+		reason := ""
 		if !pass {
-			reason := classifyRejection(j.res, minScore, authCfg, mitmCfg)
+			reason = classifyRejection(j.res, minScore, authCfg, mitmCfg)
 			reasons[reason]++
-			// Per-node detail stays DEBUG so the default threshold cannot flood
-			// the buffer; the INFO summary carries the aggregated distribution.
+			// Per-node detail stays DEBUG for the shared buffer; a dedicated
+			// ring keeps it queryable through /api/ext/rejects at any log level.
 			logs.Default().Add(logs.Entry{
 				Level: logs.LevelDebug, Category: "verify", Source: nodeSourceShort(j.node),
 				Message: fmt.Sprintf("rejected %s reason=%s", safeNodeName(j.node), reason),
@@ -386,12 +445,19 @@ func (o *Orchestrator) verifyAndFilter(ctx context.Context, nodes []config.NodeC
 		o.results[key] = j.res
 		if pass {
 			o.failures[key] = 0
+			delete(o.negCache, key)
 			admitted = append(admitted, j.node)
 		} else {
 			o.failures[key]++
 			if o.failures[key] >= maxFailures {
 				delete(o.results, key)
 			}
+			o.negCache[key] = negEntry{until: time.Now().Add(negativeCacheTTL(reason)), reason: reason}
+			o.appendRejectLocked(RejectRecord{
+				At: time.Now().UTC().Format(time.RFC3339), Node: safeNodeName(j.node),
+				Reason: reason, Score: j.res.Score, MinScore: minScore,
+				Reachable: j.res.Reachable, Error: logs.SanitizeError(j.res.Error),
+			})
 		}
 		o.mu.Unlock()
 	}
@@ -507,10 +573,13 @@ func (o *Orchestrator) logRefreshSummary(collection source.Collection, admitted 
 	sourceText := joinCounts(sources)
 	admittedText := joinCounts(admittedBy)
 	reasonText := joinCounts(reasons)
+	line := fmt.Sprintf("refresh done candidates=%d sources=%s admitted=%d admitted_by=%s deduped=%d rejected=%s",
+		len(collection.Nodes), sourceText, len(admitted), admittedText, deduped, reasonText)
+	// Also emit to stdout: docker logs must show the per-source distribution
+	// and rejection reasons without switching log levels or opening the UI.
+	log.Printf("[extension] %s", line)
 	logs.Default().Add(logs.Entry{
-		Level: logs.LevelInfo, Category: "refresh",
-		Message: fmt.Sprintf("refresh done candidates=%d sources=%s admitted=%d admitted_by=%s deduped=%d rejected=%s",
-			len(collection.Nodes), sourceText, len(admitted), admittedText, deduped, reasonText),
+		Level: logs.LevelInfo, Category: "refresh", Message: line,
 		Fields: map[string]any{
 			"candidates": len(collection.Nodes), "sources": sourceText,
 			"admitted": len(admitted), "admitted_by": admittedText,
@@ -739,7 +808,8 @@ func (o *Orchestrator) ApplyConfig(next config.ExtensionConfig) error {
 	o.ext = next
 	o.registry = registry
 	o.verifier = verifier
-	o.lastFetch = make(map[string]time.Time)
+	// Keep the attempt/backoff state: clearing it made every saved setting
+	// trigger a full refetch of all sources on the next scheduler tick.
 	o.mu.Unlock()
 	log.Printf("[extension] configuration saved; sources rebuilt")
 

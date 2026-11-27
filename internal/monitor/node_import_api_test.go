@@ -35,6 +35,34 @@ func TestNodePreviewMarksDuplicates(t *testing.T) {
 	}
 }
 
+func TestNodeBatchDeleteDryRunMatchesNames(t *testing.T) {
+	s, _ := newProxySessionTestServer(t, proxySessionTestConfig())
+	body := `{"names":["node-a","node-b"],"dry_run":true}`
+	resp := proxyAPIRequest(t, s, http.MethodPost, "/api/nodes/config/batch-delete", body)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.Code, resp.Body.String())
+	}
+	var payload struct {
+		DryRun  bool     `json:"dry_run"`
+		Count   int      `json:"count"`
+		Matched []string `json:"matched"`
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if !payload.DryRun || payload.Count != 2 || len(payload.Matched) != 2 {
+		t.Fatalf("unexpected dry-run payload: %+v", payload)
+	}
+}
+
+func TestNodeBatchDeleteRejectsEmptySelection(t *testing.T) {
+	s, _ := newProxySessionTestServer(t, proxySessionTestConfig())
+	resp := proxyAPIRequest(t, s, http.MethodPost, "/api/nodes/config/batch-delete", `{"names":[],"dry_run":true}`)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("empty selection must be rejected, got %d", resp.Code)
+	}
+}
+
 func TestNodePreviewRejectsEmptyURLList(t *testing.T) {
 	s, _ := newProxySessionTestServer(t, proxySessionTestConfig())
 	resp := proxyAPIRequest(t, s, http.MethodPost, "/api/nodes/preview", `{"mode":"urls","urls":["  "]} `)

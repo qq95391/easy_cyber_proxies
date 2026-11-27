@@ -111,7 +111,9 @@ func Run(ctx context.Context, cfg *config.Config) error {
 		extMgr.SetRuntime(boxMgr)
 		if server := boxMgr.MonitorServer(); server != nil {
 			server.SetExtensionHandler(extMgr)
+			server.SetExtensionRejects(func() any { return extMgr.RecentRejects() })
 		}
+		go watchFileDescriptors(ctx)
 		extMgr.Start(ctx)
 		defer extMgr.Stop()
 	}

@@ -154,6 +154,7 @@ test('batch import and strict verification entry points exist',()=>{
  for (const fragment of [
   'id="nodeImportOverlay"','previewNodeImport','confirmNodeImport',
   'verifyNodeQuality','/api/nodes/verify','/api/nodes/preview','/api/nodes/config/batch',
+  'cleanupInvalidNodes','/api/nodes/config/batch-delete',
  ]) {
   assert.ok(html.includes(fragment),'missing '+fragment);
  }
